@@ -1,5 +1,6 @@
 .DS_Store
 /.build
+.build
 # But DO track the specific executable
 !/.build/debug/mcp-server-macos-use
 /Packages
