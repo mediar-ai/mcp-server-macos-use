@@ -1,0 +1,37 @@
+{
+  "name": "mcp-server-macos-use",
+  "version": "0.1.4",
+  "description": "MCP server that lets AI agents control any macOS application through accessibility APIs",
+  "bin": {
+    "mcp-server-macos-use": "bin/mcp-server-macos-use"
+  },
+  "scripts": {
+    "postinstall": "xcrun swift build -c release",
+    "build": "xcrun swift build -c release"
+  },
+  "keywords": [
+    "mcp",
+    "macos",
+    "accessibility",
+    "ai",
+    "claude",
+    "automation",
+    "model-context-protocol"
+  ],
+  "author": "Mediar <matt@mediar.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mediar-ai/mcp-server-macos-use.git"
+  },
+  "homepage": "https://macos-use.dev",
+  "bugs": {
+    "url": "https://github.com/mediar-ai/mcp-server-macos-use/issues"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

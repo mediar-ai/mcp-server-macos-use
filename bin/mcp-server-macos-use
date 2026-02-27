@@ -1,0 +1,21 @@
+#!/bin/bash
+# Wrapper script for mcp-server-macos-use
+# Runs the Swift binary built by `swift build -c release`
+
+# Resolve symlinks to find the real script location
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+BINARY="$SCRIPT_DIR/.build/release/mcp-server-macos-use"
+
+if [ ! -f "$BINARY" ]; then
+  echo "Binary not found. Building..." >&2
+  cd "$SCRIPT_DIR" && xcrun swift build -c release >&2
+fi
+
+exec "$BINARY" "$@"

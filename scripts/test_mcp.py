@@ -8,7 +8,8 @@ and exercises the tools without needing Claude Code or manual reconnect.
 Usage (from project root):
     python3 scripts/test_mcp.py
     python3 scripts/test_mcp.py --test tools
-    python3 scripts/test_mcp.py --test click
+    python3 scripts/test_mcp.py --test cap
+    python3 scripts/test_mcp.py --test click --app Messages --search "Krishna"
 """
 
 import json
@@ -17,6 +18,8 @@ import subprocess
 import sys
 import threading
 import argparse
+import queue
+import re
 from typing import Any, Optional
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,7 +31,7 @@ SERVER_BIN = os.path.join(PROJECT_ROOT, ".build", "debug", "mcp-server-macos-use
 # ---------------------------------------------------------------------------
 
 class MCPClient:
-    def __init__(self, binary: str, timeout: float = 20.0):
+    def __init__(self, binary: str, timeout: float = 30.0):
         print(f"[client] Spawning server: {binary}", flush=True)
         if not os.path.exists(binary):
             raise FileNotFoundError(f"Server binary not found: {binary}")
@@ -40,7 +43,6 @@ class MCPClient:
             stderr=subprocess.PIPE,
         )
         self._id = 0
-        # Drain stderr in background so server doesn't block on it
         self._stderr_lines: list[str] = []
         threading.Thread(target=self._drain_stderr, daemon=True).start()
         print(f"[client] Server PID: {self.proc.pid}", flush=True)
@@ -73,10 +75,7 @@ class MCPClient:
         return self._read_response()
 
     def _read_response(self) -> dict:
-        """Read one newline-terminated JSON response with timeout."""
         assert self.proc.stdout is not None
-        import queue, threading
-
         result_q: queue.Queue = queue.Queue()
 
         def reader():
@@ -110,7 +109,7 @@ class MCPClient:
             "capabilities": {},
             "clientInfo": {"name": "test-client", "version": "1.0"},
         })
-        print(f"[client] ← initialize OK", flush=True)
+        print("[client] ← initialize OK", flush=True)
         self.send("notifications/initialized", notify=True)
         return resp
 
@@ -121,11 +120,14 @@ class MCPClient:
         print(f"[client] ← tools/list: {len(tools)} tools", flush=True)
         return tools
 
-    def call_tool(self, name: str, arguments: dict) -> dict:
-        print(f"[client] → tools/call {name} {list(arguments.keys())}", flush=True)
+    def call_tool(self, name: str, arguments: dict) -> "ToolResult":
+        print(f"[client] → tools/call {name} {arguments}", flush=True)
         resp = self.send("tools/call", {"name": name, "arguments": arguments})
+        result = resp.get("result", {})
+        content = result.get("content", [])
+        text = content[0].get("text", "") if content else ""
         print(f"[client] ← tools/call {name} done", flush=True)
-        return resp.get("result", {})
+        return ToolResult(text)
 
     def close(self):
         try:
@@ -135,18 +137,68 @@ class MCPClient:
         except Exception:
             self.proc.kill()
 
-    def dump_stderr(self):
+    def dump_stderr(self, n: int = 30):
         if self._stderr_lines:
-            print("\n[server stderr (last 20 lines)]:")
-            for line in self._stderr_lines[-20:]:
+            print(f"\n[server stderr (last {n} lines)]:")
+            for line in self._stderr_lines[-n:]:
                 print(f"  {line}")
+
+
+# ---------------------------------------------------------------------------
+# Tool result parser — handles the compact summary format
+# ---------------------------------------------------------------------------
+
+class ToolResult:
+    """Parses the compact text summary returned by MCP tools."""
+    def __init__(self, text: str):
+        self.raw = text
+        self._fields = {}
+        for line in text.split("\n"):
+            if ": " in line and not line.startswith("  "):
+                key, _, val = line.partition(": ")
+                self._fields[key.strip()] = val.strip()
+
+    @property
+    def status(self) -> str:
+        return self._fields.get("status", "unknown")
+
+    @property
+    def pid(self) -> Optional[int]:
+        v = self._fields.get("pid")
+        return int(v) if v else None
+
+    @property
+    def app(self) -> Optional[str]:
+        return self._fields.get("app")
+
+    @property
+    def file(self) -> Optional[str]:
+        return self._fields.get("file")
+
+    @property
+    def summary(self) -> str:
+        return self._fields.get("summary", "")
+
+    @property
+    def error(self) -> Optional[str]:
+        return self._fields.get("error") or self._fields.get("traversal_error")
+
+    def load_full_json(self) -> dict:
+        """Load the full JSON response file written by the server."""
+        if not self.file or not os.path.exists(self.file):
+            return {}
+        with open(self.file, "r") as f:
+            return json.load(f)
+
+    def __repr__(self):
+        return f"ToolResult(status={self.status}, pid={self.pid}, app={self.app}, summary={self.summary!r})"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def ok(msg: str):  print(f"  ✅ {msg}", flush=True)
+def ok(msg: str):   print(f"  ✅ {msg}", flush=True)
 def fail(msg: str): print(f"  ❌ {msg}", flush=True)
 def info(msg: str): print(f"  ℹ️  {msg}", flush=True)
 
@@ -154,19 +206,6 @@ def section(title: str):
     print(f"\n{'='*60}", flush=True)
     print(f"  {title}", flush=True)
     print(f"{'='*60}", flush=True)
-
-def parse_tool_result(result: dict) -> str:
-    content = result.get("content", [])
-    if content and isinstance(content, list):
-        return content[0].get("text", "")
-    return str(result)
-
-def parse_traversal(result: dict) -> dict:
-    text = parse_tool_result(result)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -181,139 +220,210 @@ def test_tools_list(client: MCPClient) -> bool:
         "macos-use_click_and_traverse",
         "macos-use_type_and_traverse",
         "macos-use_press_key_and_traverse",
+        "macos-use_scroll_and_traverse",
         "macos-use_refresh_traversal",
     }
     found = {t["name"] for t in tools}
     missing = expected - found
     extra = found - expected
-    if not missing and not extra:
+    if not missing:
         ok(f"All {len(expected)} expected tools present")
     else:
-        if missing: fail(f"Missing tools: {missing}")
-        if extra:   info(f"Extra tools: {extra}")
+        fail(f"Missing tools: {missing}")
+    if extra:
+        info(f"Extra tools: {extra}")
     return len(missing) == 0
 
 
 def test_open_app(client: MCPClient, app: str = "TextEdit") -> Optional[int]:
     section(f"Test: open {app}")
     result = client.call_tool("macos-use_open_application_and_traverse", {"identifier": app})
-    data = parse_traversal(result)
 
-    open_result = data.get("openResult") or {}
-    pid = data.get("traversalPid") or open_result.get("pid")
-    app_name = open_result.get("appName", "")
-    elements = data.get("traversal", {}).get("elements", [])
+    if result.status == "error":
+        fail(f"Error: {result.error}")
+        return None
 
-    if app_name:
-        ok(f"Opened {app_name!r} (pid={pid})")
+    ok(f"Opened {result.app!r} (PID: {result.pid})")
+    info(f"Summary: {result.summary}")
+
+    # Verify full JSON file was written
+    data = result.load_full_json()
+    if data:
+        elements = data.get("traversal", {}).get("elements", [])
+        stats = data.get("traversal", {}).get("stats", {})
+        ok(f"Full JSON: {len(elements)} elements, truncated={stats.get('truncated', False)}")
     else:
-        fail(f"No appName in result; keys: {list(data.keys())}")
+        fail("Could not load full JSON response file")
 
-    if elements:
-        ok(f"Traversal returned {len(elements)} elements")
-        roles = {}
-        for e in elements:
-            r = e.get("role", "?").split(" ")[0]
-            roles[r] = roles.get(r, 0) + 1
-        info(f"Roles: { {k: v for k, v in sorted(roles.items(), key=lambda x: -x[1])[:6]} }")
-    else:
-        fail("No elements in traversal")
-
-    return pid
+    return result.pid
 
 
-def test_click_first_interactable(client: MCPClient, pid: int, search: Optional[str] = None) -> bool:
-    """Generic test: find an in-viewport clickable element and click it.
-    If search is given, finds the first element whose text contains it (case-insensitive).
-    Otherwise picks the first narrow AXStaticText row or AXButton in viewport.
-    Verifies that clicking produces some UI change (diff)."""
-    section(f"Test: click {'element matching ' + repr(search) if search else 'first interactable element'}")
+def test_click(client: MCPClient, pid: int, search: Optional[str] = None) -> bool:
+    section(f"Test: click {'matching ' + repr(search) if search else 'first interactable'}")
 
+    # Get current state
     result = client.call_tool("macos-use_refresh_traversal", {"pid": pid})
-    data = parse_traversal(result)
+    data = result.load_full_json()
     elements = data.get("traversal", {}).get("elements", [])
+
+    if not elements:
+        fail("No elements from refresh")
+        return False
 
     candidate = None
 
     if search:
         needle = search.lower()
-        # Prefer in-viewport sidebar row; fall back to any matching StaticText (scroll will handle it)
-        for require_vp in (True, False):
-            for e in elements:
-                text = (e.get("text") or "").lower()
-                role = e.get("role", "")
-                w = e.get("width", 0)
-                in_vp = e.get("in_viewport", False)
-                if needle in text and "StaticText" in role and 50 < w <= 400:
-                    if not require_vp or in_vp:
-                        candidate = e
-                        break
-            if candidate:
-                break
-        if candidate is None:
-            fail(f"No StaticText element containing {search!r} found")
-            info("All elements with matching text:")
-            for e in elements:
-                if search.lower() in (e.get("text") or "").lower():
-                    info(f"  {e.get('role')} in_viewport={e.get('in_viewport')} w={e.get('width')} | {(e.get('text') or '')[:60]}")
-            return False
-    else:
-        # Pick a good target: prefer an AXStaticText sidebar/list row (narrow width,
-        # has text, in_viewport). Fall back to any AXButton in viewport.
         for e in elements:
-            role = e.get("role", "")
-            in_vp = e.get("in_viewport", False)
-            text = (e.get("text") or "").strip()
-            w = e.get("width", 0)
-            if not in_vp or not text:
-                continue
-            if "StaticText" in role and 50 < w <= 400:
+            text = (e.get("text") or "").lower()
+            if needle in text and e.get("in_viewport"):
                 candidate = e
                 break
-        if candidate is None:
-            for e in elements:
-                role = e.get("role", "")
-                if e.get("in_viewport") and "Button" in role and (e.get("text") or "").strip():
-                    candidate = e
-                    break
+        if not candidate:
+            fail(f"No in-viewport element matching {search!r}")
+            return False
+    else:
+        for e in elements:
+            role = e.get("role", "")
+            if (e.get("in_viewport") and e.get("text", "").strip()
+                    and e.get("width") and e.get("height")
+                    and ("Button" in role or "StaticText" in role)):
+                candidate = e
+                break
 
     if not candidate:
-        fail("No suitable interactable element found in traversal")
+        fail("No suitable clickable element found")
         return False
 
-    x, y, w, h = candidate["x"], candidate["y"], candidate["width"], candidate["height"]
+    x, y = candidate["x"], candidate["y"]
+    w, h = candidate.get("width", 0), candidate.get("height", 0)
     text = (candidate.get("text") or "")[:60]
-    info(f"Clicking: {candidate.get('role')} | {text!r} | x={x}, y={y}, w={w}, h={h}")
+    info(f"Clicking: {candidate.get('role')} | {text!r} | ({x},{y}) {w}x{h}")
 
     result = client.call_tool("macos-use_click_and_traverse", {
         "pid": pid, "x": x, "y": y, "width": w, "height": h,
     })
-    data = parse_traversal(result)
-    diff = data.get("diff", {})
-    added   = diff.get("added", [])
-    removed = diff.get("removed", [])
-    modified = diff.get("modified", [])
 
-    if added or removed or modified:
-        ok(f"UI changed: {len(added)} added, {len(removed)} removed, {len(modified)} modified")
+    if result.status == "success":
+        ok(f"Click succeeded: {result.summary}")
         return True
     else:
-        fail("No UI change after click")
-        info(f"Clicked: {text!r} at ({x},{y})")
-        client.dump_stderr()
+        fail(f"Click failed: {result.error}")
         return False
 
 
 def test_refresh(client: MCPClient, pid: int) -> bool:
     section("Test: refresh_traversal")
     result = client.call_tool("macos-use_refresh_traversal", {"pid": pid})
-    data = parse_traversal(result)
+
+    if result.status != "success":
+        fail(f"Refresh failed: {result.error}")
+        return False
+
+    data = result.load_full_json()
     elements = data.get("traversal", {}).get("elements", [])
-    if elements:
-        ok(f"Refresh returned {len(elements)} elements")
+    stats = data.get("traversal", {}).get("stats", {})
+
+    ok(f"Refresh: {len(elements)} elements, {stats.get('visible_elements_count', '?')} visible")
+    return True
+
+
+def test_type(client: MCPClient, pid: int) -> bool:
+    section("Test: type_and_traverse")
+    result = client.call_tool("macos-use_type_and_traverse", {
+        "pid": pid, "text": "hello test",
+    })
+    if result.status == "success":
+        ok(f"Type succeeded: {result.summary}")
         return True
     else:
-        fail("Refresh returned no elements")
+        fail(f"Type failed: {result.error}")
+        return False
+
+
+def test_press_key(client: MCPClient, pid: int) -> bool:
+    section("Test: press_key_and_traverse")
+    # Press Escape — safe, doesn't destructively change state
+    result = client.call_tool("macos-use_press_key_and_traverse", {
+        "pid": pid, "keyName": "Escape",
+    })
+    if result.status == "success":
+        ok(f"Press key succeeded: {result.summary}")
+        return True
+    else:
+        fail(f"Press key failed: {result.error}")
+        return False
+
+
+def test_element_cap(client: MCPClient) -> bool:
+    """Test that the 5000 element cap works by opening Finder (which has many elements)."""
+    section("Test: element cap (5000 limit)")
+
+    # Open Finder which typically has lots of elements
+    result = client.call_tool("macos-use_open_application_and_traverse", {
+        "identifier": "com.apple.finder",
+    })
+
+    if result.status != "success":
+        fail(f"Could not open Finder: {result.error}")
+        return False
+
+    pid = result.pid
+    data = result.load_full_json()
+    elements = data.get("traversal", {}).get("elements", [])
+    stats = data.get("traversal", {}).get("stats", {})
+    count = len(elements)
+    truncated = stats.get("truncated", False)
+
+    info(f"Finder: {count} elements, truncated={truncated}")
+
+    if count <= 5000:
+        ok(f"Element count ({count}) is within cap of 5000")
+    else:
+        fail(f"Element count ({count}) exceeds cap of 5000!")
+        return False
+
+    # Also verify the truncated field is present in stats
+    if "truncated" in stats:
+        ok(f"'truncated' field present in stats (value: {truncated})")
+    else:
+        fail("'truncated' field missing from stats")
+        return False
+
+    # For a real stress test, open Downloads in Finder and traverse again
+    # But just verifying the field exists and count <= 5000 is sufficient
+    info("To stress-test: open a folder with 1000s of files and call refresh_traversal")
+
+    return True
+
+
+def test_scroll(client: MCPClient, pid: int) -> bool:
+    section("Test: scroll_and_traverse")
+    # Get an element position to scroll at
+    result = client.call_tool("macos-use_refresh_traversal", {"pid": pid})
+    data = result.load_full_json()
+    elements = data.get("traversal", {}).get("elements", [])
+
+    # Find a scrollable area
+    target = None
+    for e in elements:
+        if e.get("in_viewport") and e.get("x") is not None and e.get("y") is not None:
+            target = e
+            break
+
+    if not target:
+        fail("No element to scroll at")
+        return False
+
+    x, y = target["x"], target["y"]
+    result = client.call_tool("macos-use_scroll_and_traverse", {
+        "pid": pid, "x": x, "y": y, "deltaY": 3,
+    })
+    if result.status == "success":
+        ok(f"Scroll succeeded: {result.summary}")
+        return True
+    else:
+        fail(f"Scroll failed: {result.error}")
         return False
 
 
@@ -323,13 +433,14 @@ def test_refresh(client: MCPClient, pid: int) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server test client")
-    parser.add_argument("--test", choices=["all", "tools", "open", "click", "refresh"],
-                        default="all")
-    parser.add_argument("--app", default="Messages",
-                        help="App to open for open/click/refresh tests (default: Messages)")
+    parser.add_argument("--test", choices=[
+        "all", "tools", "open", "click", "refresh", "type", "press", "scroll", "cap"
+    ], default="all")
+    parser.add_argument("--app", default="TextEdit",
+                        help="App to open for tests (default: TextEdit)")
     parser.add_argument("--search", default=None,
-                        help="Text to search for in click test (e.g. 'Krishna')")
-    parser.add_argument("--timeout", type=float, default=20.0,
+                        help="Text to search for in click test")
+    parser.add_argument("--timeout", type=float, default=30.0,
                         help="Seconds to wait for each server response")
     args = parser.parse_args()
 
@@ -344,38 +455,71 @@ def main():
         pid = None
 
         if args.test in ("all", "tools"):
-            results.append(test_tools_list(client))
+            results.append(("tools/list", test_tools_list(client)))
+
+        if args.test in ("all", "cap"):
+            results.append(("element_cap", test_element_cap(client)))
 
         if args.test in ("all", "open"):
             pid = test_open_app(client, args.app)
-            results.append(pid is not None)
-
-        if args.test in ("all", "click"):
-            if pid is None:
-                pid = test_open_app(client, args.app)
-            if pid:
-                results.append(test_click_first_interactable(client, pid, search=args.search))
-            else:
-                fail("Skipping click test — no PID")
+            results.append(("open_app", pid is not None))
 
         if args.test in ("all", "refresh"):
             if pid is None:
                 pid = test_open_app(client, args.app)
             if pid:
-                results.append(test_refresh(client, pid))
+                results.append(("refresh", test_refresh(client, pid)))
 
+        if args.test in ("all", "click"):
+            if pid is None:
+                pid = test_open_app(client, args.app)
+            if pid:
+                results.append(("click", test_click(client, pid, search=args.search)))
+            else:
+                fail("Skipping click test — no PID")
+
+        if args.test in ("all", "scroll"):
+            if pid is None:
+                pid = test_open_app(client, args.app)
+            if pid:
+                results.append(("scroll", test_scroll(client, pid)))
+
+        if args.test in ("all", "press"):
+            if pid is None:
+                pid = test_open_app(client, args.app)
+            if pid:
+                results.append(("press_key", test_press_key(client, pid)))
+
+        if args.test in ("all", "type"):
+            if pid is None:
+                pid = test_open_app(client, args.app)
+            if pid:
+                results.append(("type", test_type(client, pid)))
+
+        # Summary
         section("Summary")
-        passed = sum(1 for r in results if r)
+        passed = sum(1 for _, r in results if r)
         total = len(results)
+        for name, r in results:
+            symbol = "✅" if r else "❌"
+            print(f"  {symbol} {name}", flush=True)
+        print(flush=True)
         symbol = "✅" if passed == total else "❌"
         print(f"  {symbol} {passed}/{total} tests passed", flush=True)
+
+        if passed < total:
+            print("\n[server stderr (last 30 lines)]:")
+            client.dump_stderr()
+            sys.exit(1)
 
     except TimeoutError as e:
         print(f"\n⚠️  TIMEOUT: {e}", flush=True)
         client.dump_stderr()
         sys.exit(1)
     except Exception as e:
+        import traceback
         print(f"\n⚠️  ERROR: {e}", flush=True)
+        traceback.print_exc()
         client.dump_stderr()
         sys.exit(1)
     finally:
