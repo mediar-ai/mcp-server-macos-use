@@ -459,7 +459,7 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
 
 /// Build a concise text summary for the MCP response instead of returning the full JSON.
 /// The full JSON is written to a file; this summary contains just the key info + file path.
-func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResponse: ToolResponse, filepath: String) -> String {
+func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResponse: ToolResponse, filepath: String, fileSize: Int) -> String {
     var lines: [String] = []
 
     // Status line
@@ -474,8 +474,19 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         lines.append("app: \(appName)")
     }
 
-    // File path
+    // File path + metadata
     lines.append("file: \(filepath)")
+    let elementCount: Int
+    if let traversal = toolResponse.traversal {
+        elementCount = traversal.elements.count
+    } else {
+        let added = toolResponse.diff?.added.count ?? 0
+        let removed = toolResponse.diff?.removed.count ?? 0
+        let modified = toolResponse.diff?.modified.count ?? 0
+        elementCount = added + removed + modified
+    }
+    lines.append("file_size: \(fileSize) bytes (\(elementCount) elements)")
+    lines.append("⚠️ DO NOT read the full file — use grep to search for specific elements by text or role.")
 
     // Errors if any
     if let err = toolResponse.primaryActionError {
@@ -562,6 +573,17 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         }
     }
 
+    // Inline visible interactive elements
+    if let traversal = toolResponse.traversal {
+        // Full traversal (open/refresh): show all visible interactive elements
+        let visLines = buildVisibleElementsSection(elements: traversal.elements, label: "visible_elements")
+        lines.append(contentsOf: visLines)
+    } else if let diff = toolResponse.diff, !diff.added.isEmpty {
+        // Diff (click/type/press/scroll): show newly added visible elements
+        let visLines = buildVisibleElementsSection(elements: diff.added, label: "visible_elements", interactiveCap: 20, textCap: 10)
+        lines.append(contentsOf: visLines)
+    }
+
     return lines.joined(separator: "\n")
 }
 
@@ -578,6 +600,73 @@ func buildDiffSummary(_ diff: EnrichedTraversalDiff?) -> String {
 /// Truncate a string to maxLen characters
 func truncate(_ s: String, maxLen: Int) -> String {
     s.count > maxLen ? String(s.prefix(maxLen)) + "..." : s
+}
+
+/// Protocol for element types that can be displayed in visible elements section
+protocol VisibleElement {
+    var role: String { get }
+    var text: String? { get }
+    var in_viewport: Bool? { get }
+    var x: Double? { get }
+    var y: Double? { get }
+    var width: Double? { get }
+    var height: Double? { get }
+}
+extension EnrichedElementData: VisibleElement {}
+extension DiffElementData: VisibleElement {}
+
+/// Interactive role prefixes worth showing inline in the compact summary
+private let interactiveRolePrefixes: [String] = [
+    "AXButton", "AXLink", "AXTextField", "AXTextArea", "AXCheckBox",
+    "AXRadioButton", "AXPopUpButton", "AXComboBox", "AXSlider",
+    "AXMenuItem", "AXMenuButton", "AXTab"
+]
+
+/// Check if a role string matches any interactive prefix
+private func isInteractiveRole(_ role: String) -> Bool {
+    interactiveRolePrefixes.contains { role.hasPrefix($0) }
+}
+
+/// Check if a role string is static text
+private func isStaticTextRole(_ role: String) -> Bool {
+    role.hasPrefix("AXStaticText")
+}
+
+/// Build a visible_elements section from a list of elements
+func buildVisibleElementsSection<T: VisibleElement>(elements: [T], label: String, interactiveCap: Int = 30, textCap: Int = 10) -> [String] {
+    var interactive: [String] = []
+    var staticText: [String] = []
+
+    for el in elements {
+        guard el.in_viewport == true else { continue }
+        guard let text = el.text, !text.isEmpty else { continue }
+
+        let truncatedText = truncate(text, maxLen: 50)
+        let pos: String
+        if let x = el.x, let y = el.y, let w = el.width, let h = el.height {
+            pos = " (\(Int(x)),\(Int(y)) \(Int(w))×\(Int(h)))"
+        } else {
+            pos = ""
+        }
+        let line = "  [\(el.role)] \"\(truncatedText)\"\(pos)"
+
+        if isInteractiveRole(el.role) {
+            if interactive.count < interactiveCap {
+                interactive.append(line)
+            }
+        } else if isStaticTextRole(el.role) {
+            if staticText.count < textCap {
+                staticText.append(line)
+            }
+        }
+    }
+
+    if interactive.isEmpty && staticText.isEmpty { return [] }
+
+    var result = ["\(label):"]
+    result.append(contentsOf: interactive)
+    result.append(contentsOf: staticText)
+    return result
 }
 
 // --- Direct AX Element Interaction ---
@@ -926,7 +1015,7 @@ func setupAndStartServer() async throws -> Server {
 
     let server = Server(
         name: "SwiftMacOSServerDirect", // Renamed slightly
-        version: "1.3.0", // Incremented version for major change
+        version: "1.4.0", // Inline visible elements in compact summary
         capabilities: .init(
             tools: .init(listChanged: true)
         )
@@ -1142,7 +1231,7 @@ func setupAndStartServer() async throws -> Server {
             try? resultJsonString.write(toFile: filepath, atomically: true, encoding: .utf8)
             fputs("log: handler(CallTool): wrote full response to \(filepath) (\(resultJsonString.count) bytes)\n", stderr)
 
-            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath)
+            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultJsonString.count)
             fputs("log: handler(CallTool): returning compact summary (\(summary.count) chars)\n", stderr)
 
             return .init(content: [.text(summary)], isError: isError)

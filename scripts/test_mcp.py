@@ -397,6 +397,85 @@ def test_element_cap(client: MCPClient) -> bool:
     return True
 
 
+def test_visible_elements(client: MCPClient, pid: int) -> bool:
+    """Test that compact summaries include file_size, guidance, and visible_elements."""
+    section("Test: visible_elements in compact summary")
+    passed = True
+
+    # 1. Full traversal case (refresh) — should have visible_elements from traversal
+    result = client.call_tool("macos-use_refresh_traversal", {"pid": pid})
+    raw = result.raw
+
+    # Check file_size line
+    if "file_size:" in raw and "bytes" in raw and "elements)" in raw:
+        ok("Refresh summary has file_size line")
+    else:
+        fail("Refresh summary missing file_size line")
+        passed = False
+
+    # Check guidance line
+    if "DO NOT read the full file" in raw:
+        ok("Refresh summary has guidance line")
+    else:
+        fail("Refresh summary missing guidance line")
+        passed = False
+
+    # Check visible_elements section
+    if "visible_elements:" in raw:
+        # Count indented element lines
+        vis_lines = [l for l in raw.split("\n") if l.startswith("  [AX")]
+        ok(f"Refresh summary has visible_elements ({len(vis_lines)} elements)")
+        # Verify format: [AXRole] "text" (x,y w×h)
+        if vis_lines:
+            sample = vis_lines[0]
+            if "] \"" in sample:
+                ok(f"Element format looks correct: {sample[:80]}")
+            else:
+                fail(f"Unexpected element format: {sample[:80]}")
+                passed = False
+    else:
+        # It's possible (but unlikely) there are zero visible interactive elements
+        info("No visible_elements section — may be OK if no interactive elements visible")
+
+    # 2. Diff case (click) — should have visible_elements from added elements
+    data = result.load_full_json()
+    elements = data.get("traversal", {}).get("elements", [])
+    candidate = None
+    for e in elements:
+        if (e.get("in_viewport") and e.get("text", "").strip()
+                and e.get("width") and e.get("height")
+                and ("Button" in e.get("role", "") or "StaticText" in e.get("role", ""))):
+            candidate = e
+            break
+
+    if candidate:
+        click_result = client.call_tool("macos-use_click_and_traverse", {
+            "pid": pid, "x": candidate["x"], "y": candidate["y"],
+            "width": candidate.get("width", 0), "height": candidate.get("height", 0),
+        })
+        click_raw = click_result.raw
+        if "file_size:" in click_raw:
+            ok("Click summary has file_size line")
+        else:
+            fail("Click summary missing file_size line")
+            passed = False
+        if "DO NOT read the full file" in click_raw:
+            ok("Click summary has guidance line")
+        else:
+            fail("Click summary missing guidance line")
+            passed = False
+        # visible_elements may or may not be present depending on diff.added
+        if "visible_elements:" in click_raw:
+            vis_lines = [l for l in click_raw.split("\n") if l.startswith("  [AX")]
+            ok(f"Click summary has visible_elements ({len(vis_lines)} elements)")
+        else:
+            info("Click summary has no visible_elements (no visible added elements in diff)")
+    else:
+        info("Skipped click sub-test — no suitable element to click")
+
+    return passed
+
+
 def test_scroll(client: MCPClient, pid: int) -> bool:
     section("Test: scroll_and_traverse")
     # Get an element position to scroll at
@@ -434,7 +513,7 @@ def test_scroll(client: MCPClient, pid: int) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="MCP server test client")
     parser.add_argument("--test", choices=[
-        "all", "tools", "open", "click", "refresh", "type", "press", "scroll", "cap"
+        "all", "tools", "open", "click", "refresh", "type", "press", "scroll", "cap", "visible"
     ], default="all")
     parser.add_argument("--app", default="TextEdit",
                         help="App to open for tests (default: TextEdit)")
@@ -469,6 +548,12 @@ def main():
                 pid = test_open_app(client, args.app)
             if pid:
                 results.append(("refresh", test_refresh(client, pid)))
+
+        if args.test in ("all", "visible"):
+            if pid is None:
+                pid = test_open_app(client, args.app)
+            if pid:
+                results.append(("visible_elements", test_visible_elements(client, pid)))
 
         if args.test in ("all", "click"):
             if pid is None:
