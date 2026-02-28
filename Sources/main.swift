@@ -201,6 +201,11 @@ struct ToolResponse: Codable {
     var diff: EnrichedTraversalDiff?           // for click/type/press: what changed
     var primaryActionError: String?
     var traversalError: String?
+
+    // Cross-app handoff: populated when a different app became frontmost after the action
+    var appSwitchPid: pid_t?
+    var appSwitchAppName: String?
+    var appSwitchTraversal: EnrichedResponseData?
 }
 
 // --- Viewport Detection Helpers ---
@@ -582,6 +587,19 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         // Diff (click/type/press/scroll): show newly added visible elements
         let visLines = buildVisibleElementsSection(elements: diff.added, label: "visible_elements", interactiveCap: 20, textCap: 10)
         lines.append(contentsOf: visLines)
+    }
+
+    // Cross-app handoff: a different app became frontmost after the action
+    if let switchPid = toolResponse.appSwitchPid {
+        let switchName = toolResponse.appSwitchAppName ?? "Unknown"
+        lines.append("app_switch: \(switchName) (PID: \(switchPid)) is now frontmost")
+        if let switchTraversal = toolResponse.appSwitchTraversal {
+            let total = switchTraversal.elements.count
+            let visible = switchTraversal.elements.filter { $0.in_viewport == true }.count
+            lines.append("app_switch_elements: \(total) total, \(visible) visible")
+            let visLines = buildVisibleElementsSection(elements: switchTraversal.elements, label: "app_switch_visible_elements")
+            lines.append(contentsOf: visLines)
+        }
     }
 
     return lines.joined(separator: "\n")
@@ -1205,7 +1223,32 @@ func setupAndStartServer() async throws -> Server {
             }
 
             // --- Build simplified response and serialize to JSON ---
-            let toolResponse = buildToolResponse(actionResult, hasDiff: hasDiff)
+            var toolResponse = buildToolResponse(actionResult, hasDiff: hasDiff)
+
+            // --- Detect cross-app handoff ---
+            // After diff-based actions, check if a different app became frontmost
+            if hasDiff, let originalPid = options.pidForTraversal {
+                let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                if let newPid = frontmostPid, newPid != originalPid {
+                    let frontmostName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
+                    fputs("log: handler(CallTool): app switch detected! Original PID \(originalPid) -> new frontmost PID \(newPid) (\(frontmostName))\n", stderr)
+                    toolResponse.appSwitchPid = newPid
+                    toolResponse.appSwitchAppName = frontmostName
+
+                    // Traverse the new frontmost app
+                    do {
+                        let newTraversal: ResponseData = try await Task { @MainActor in
+                            return try traverseAccessibilityTree(pid: newPid)
+                        }.value
+                        let newWindowBounds = getWindowBoundsFromTraversal(newTraversal)
+                            ?? getWindowBoundsFromAPI(pid: newPid)
+                        toolResponse.appSwitchTraversal = enrichResponseData(newTraversal, windowBounds: newWindowBounds)
+                        fputs("log: handler(CallTool): traversed new frontmost app \(frontmostName) (PID \(newPid)): \(newTraversal.elements.count) elements\n", stderr)
+                    } catch {
+                        fputs("warning: handler(CallTool): failed to traverse new frontmost app \(frontmostName) (PID \(newPid)): \(error)\n", stderr)
+                    }
+                }
+            }
             guard let resultJsonString = serializeToJsonString(toolResponse) else {
                 fputs("error: handler(CallTool): failed to serialize ToolResponse to JSON for tool \(params.name).\n", stderr)
                 throw MCPError.internalError("failed to serialize ToolResponse to JSON")
