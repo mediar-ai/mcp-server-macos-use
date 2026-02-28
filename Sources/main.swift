@@ -1033,7 +1033,7 @@ func setupAndStartServer() async throws -> Server {
 
     let server = Server(
         name: "SwiftMacOSServerDirect", // Renamed slightly
-        version: "1.4.0", // Inline visible elements in compact summary
+        version: "1.5.0", // Cross-app handoff detection
         capabilities: .init(
             tools: .init(listChanged: true)
         )
