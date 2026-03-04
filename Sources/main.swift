@@ -206,6 +206,47 @@ struct ToolResponse: Codable {
     var appSwitchPid: pid_t?
     var appSwitchAppName: String?
     var appSwitchTraversal: EnrichedResponseData?
+
+    // Sheet/dialog detection
+    var sheetDetected: Bool?
+}
+
+// --- Sheet Detection ---
+
+/// Check if the app has an AXSheet child (file dialogs, save sheets, etc.)
+/// and return its bounds for viewport scoping.
+func findSheetBounds(pid: pid_t) -> CGRect? {
+    let appElement = AXUIElementCreateApplication(pid)
+
+    // Check all windows for AXSheet children
+    var windowsRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+          let windows = windowsRef as? [AXUIElement] else { return nil }
+
+    for window in windows {
+        // Look for AXSheet role among children
+        var childCount: CFIndex = 0
+        guard AXUIElementGetAttributeValueCount(window, kAXChildrenAttribute as CFString, &childCount) == .success,
+              childCount > 0 else { continue }
+        let fetchCount = min(CFIndex(50), childCount)
+        var childrenRef: CFArray?
+        guard AXUIElementCopyAttributeValues(window, kAXChildrenAttribute as CFString, 0, fetchCount, &childrenRef) == .success,
+              let cfArray = childrenRef else { continue }
+        let children = cfArray as [AnyObject]
+        for child in children {
+            let childElement = child as! AXUIElement
+            var roleRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(childElement, kAXRoleAttribute as CFString, &roleRef) == .success,
+                  let role = roleRef as? String else { continue }
+            if role == "AXSheet" {
+                if let frame = getAXElementFrame(childElement) {
+                    fputs("log: findSheetBounds: found AXSheet at \(frame)\n", stderr)
+                    return frame
+                }
+            }
+        }
+    }
+    return nil
 }
 
 // --- Viewport Detection Helpers ---
@@ -375,11 +416,21 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
         }
     }
 
+    // Check for AXSheet (file dialogs, save sheets) — use sheet bounds for viewport
+    var sheetDetected = false
+    if let pid = result.traversalPid ?? result.openResult?.pid {
+        if let sheetBounds = findSheetBounds(pid: pid) {
+            windowBounds = sheetBounds
+            sheetDetected = true
+        }
+    }
+
     var response = ToolResponse()
     response.openResult = result.openResult
     response.traversalPid = result.traversalPid
     response.primaryActionError = result.primaryActionError
     response.traversalError = result.traversalAfterError ?? result.traversalBeforeError
+    response.sheetDetected = sheetDetected ? true : nil
 
     if hasDiff, let rawDiff = result.traversalDiff {
         let coordinateAttrs: Set<String> = ["x", "y", "width", "height"]
@@ -478,6 +529,9 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
     if let appName = toolResponse.traversal?.app_name ?? toolResponse.openResult?.appName {
         lines.append("app: \(appName)")
     }
+    if toolResponse.sheetDetected == true {
+        lines.append("dialog: AXSheet detected (viewport scoped to sheet bounds)")
+    }
 
     // File path + metadata
     lines.append("file: \(filepath)")
@@ -491,7 +545,7 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         elementCount = added + removed + modified
     }
     lines.append("file_size: \(fileSize) bytes (\(elementCount) elements)")
-    lines.append("⚠️ DO NOT read the full file — use grep to search for specific elements by text or role.")
+    lines.append("hint: grep -n 'AXButton' \(filepath)  # search by role or text")
 
     // Errors if any
     if let err = toolResponse.primaryActionError {
@@ -685,6 +739,87 @@ func buildVisibleElementsSection<T: VisibleElement>(elements: [T], label: String
     result.append(contentsOf: interactive)
     result.append(contentsOf: staticText)
     return result
+}
+
+// --- Flat Text Response File Builder ---
+
+/// Format a single element as a grep-friendly text line
+func formatElementLine(_ el: VisibleElement, prefix: String = " ") -> String {
+    var parts: [String] = []
+    parts.append("[\(el.role)]")
+    if let text = el.text, !text.isEmpty {
+        let truncated = text.count > 80 ? String(text.prefix(80)) + "..." : text
+        parts.append("\"\(truncated)\"")
+    }
+    if let x = el.x, let y = el.y {
+        parts.append("x:\(Int(x)) y:\(Int(y))")
+    }
+    if let w = el.width, let h = el.height {
+        parts.append("w:\(Int(w)) h:\(Int(h))")
+    }
+    if el.in_viewport == true {
+        parts.append("visible")
+    }
+    return "\(prefix)\(parts.joined(separator: " "))"
+}
+
+/// Build a flat text representation of a ToolResponse for writing to .txt files
+func buildFlatTextResponse(_ toolResponse: ToolResponse) -> String {
+    var lines: [String] = []
+
+    if let traversal = toolResponse.traversal {
+        // Full traversal
+        lines.append("# \(traversal.app_name) — \(traversal.elements.count) elements (\(traversal.processing_time_seconds)s)")
+        if toolResponse.sheetDetected == true {
+            lines.append("# dialog: AXSheet detected")
+        }
+        lines.append("")
+        for el in traversal.elements {
+            lines.append(formatElementLine(el))
+        }
+    }
+
+    if let diff = toolResponse.diff {
+        lines.append("# diff: +\(diff.added.count) added, -\(diff.removed.count) removed, ~\(diff.modified.count) modified")
+        if toolResponse.sheetDetected == true {
+            lines.append("# dialog: AXSheet detected")
+        }
+        lines.append("")
+        for el in diff.added {
+            lines.append(formatElementLine(el, prefix: "+ "))
+        }
+        for el in diff.removed {
+            lines.append(formatElementLine(el, prefix: "- "))
+        }
+        for mod in diff.modified {
+            var changeParts: [String] = []
+            for change in mod.changes {
+                let old = change.oldValue ?? change.removedText ?? ""
+                let new = change.newValue ?? change.addedText ?? ""
+                changeParts.append("\(change.attributeName): '\(old)' -> '\(new)'")
+            }
+            lines.append("~ [\(mod.after.role)] \"\(mod.after.text ?? "")\" | \(changeParts.joined(separator: ", "))")
+        }
+    }
+
+    // Cross-app handoff
+    if let switchTraversal = toolResponse.appSwitchTraversal {
+        lines.append("")
+        lines.append("# app_switch: \(toolResponse.appSwitchAppName ?? "Unknown") (PID: \(toolResponse.appSwitchPid ?? 0))")
+        for el in switchTraversal.elements {
+            lines.append(formatElementLine(el))
+        }
+    }
+
+    // Errors
+    if let err = toolResponse.primaryActionError {
+        lines.append("# error: \(err)")
+    }
+    if let err = toolResponse.traversalError {
+        lines.append("# traversal_error: \(err)")
+    }
+
+    return lines.joined(separator: "\n")
 }
 
 // --- Direct AX Element Interaction ---
@@ -1249,10 +1384,7 @@ func setupAndStartServer() async throws -> Server {
                     }
                 }
             }
-            guard let resultJsonString = serializeToJsonString(toolResponse) else {
-                fputs("error: handler(CallTool): failed to serialize ToolResponse to JSON for tool \(params.name).\n", stderr)
-                throw MCPError.internalError("failed to serialize ToolResponse to JSON")
-            }
+            let resultTextString = buildFlatTextResponse(toolResponse)
 
             // --- Determine if it was an error overall ---
             let isError = actionResult.primaryActionError != nil ||
@@ -1263,18 +1395,18 @@ func setupAndStartServer() async throws -> Server {
                  fputs("warning: handler(CallTool): Action resulted in an error state (primary: \(actionResult.primaryActionError ?? "nil"), before: \(actionResult.traversalBeforeError ?? "nil"), after: \(actionResult.traversalAfterError ?? "nil")).\n", stderr)
             }
 
-            // --- Write full JSON to file, return compact summary ---
+            // --- Write flat text to file, return compact summary ---
             let outputDir = "/tmp/macos-use"
             try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
 
             let timestamp = Int(Date().timeIntervalSince1970 * 1000) // ms precision to avoid collisions
             let safeName = params.name.replacingOccurrences(of: "macos-use_", with: "")
-            let filename = "\(timestamp)_\(safeName).json"
+            let filename = "\(timestamp)_\(safeName).txt"
             let filepath = "\(outputDir)/\(filename)"
-            try? resultJsonString.write(toFile: filepath, atomically: true, encoding: .utf8)
-            fputs("log: handler(CallTool): wrote full response to \(filepath) (\(resultJsonString.count) bytes)\n", stderr)
+            try? resultTextString.write(toFile: filepath, atomically: true, encoding: .utf8)
+            fputs("log: handler(CallTool): wrote full response to \(filepath) (\(resultTextString.count) bytes)\n", stderr)
 
-            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultJsonString.count)
+            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultTextString.count)
             fputs("log: handler(CallTool): returning compact summary (\(summary.count) chars)\n", stderr)
 
             return .init(content: [.text(summary)], isError: isError)

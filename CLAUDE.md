@@ -28,12 +28,14 @@ Always use `xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift` for bot
 
 ## MCP Response Files
 
-MCP tool responses are saved as JSON files to `/tmp/macos-use/` to reduce context bloat. Each tool call returns a compact summary + file path instead of the full traversal data.
+MCP tool responses are saved as flat text files to `/tmp/macos-use/` to reduce context bloat. Each tool call returns a compact summary + file path instead of the full traversal data.
 
 **Reading responses:**
 - The summary includes status, PID, app name, file path, and a brief description of what happened
-- To find specific elements: `grep -n "AXButton" /tmp/macos-use/<file>.json`
-- To get coordinates for an element: `grep -B2 -A4 "search text" /tmp/macos-use/<file>.json`
+- To find specific elements: `grep -n "AXButton" /tmp/macos-use/<file>.txt`
+- To get coordinates for an element: `grep "search text" /tmp/macos-use/<file>.txt`
+- Each line is one element: `[AXButton (button)] "Open" x:680 y:520 w:80 h:30 visible`
+- Diff lines use prefixes: `+` added, `-` removed, `~` modified
 - Don't read entire files into context — use targeted grep searches
 - For diffs, the summary includes counts of added/removed/modified elements and up to 3 notable text changes
 

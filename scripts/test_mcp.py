@@ -183,12 +183,66 @@ class ToolResult:
     def error(self) -> Optional[str]:
         return self._fields.get("error") or self._fields.get("traversal_error")
 
-    def load_full_json(self) -> dict:
-        """Load the full JSON response file written by the server."""
+    def load_full_text(self) -> list:
+        """Load the flat text response file and parse element lines into dicts.
+        Returns a list of element dicts with keys: role, text, x, y, width, height, in_viewport, prefix.
+        """
         if not self.file or not os.path.exists(self.file):
-            return {}
+            return []
+        import re
+        elements = []
         with open(self.file, "r") as f:
-            return json.load(f)
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                # Detect prefix: "+ ", "- ", "~ ", or " " (plain element)
+                prefix = ""
+                content = line
+                if line.startswith("+ ") or line.startswith("- ") or line.startswith("~ "):
+                    prefix = line[0]
+                    content = line[2:]
+                elif line.startswith(" "):
+                    content = line.lstrip(" ")
+
+                # Parse: [Role] "text" x:N y:N w:N h:N visible
+                m = re.match(r'\[([^\]]+)\](?:\s+"([^"]*)")?(.*)$', content)
+                if not m:
+                    continue
+                role = m.group(1)
+                text = m.group(2) or ""
+                rest = m.group(3)
+
+                el = {"role": role, "text": text, "prefix": prefix}
+                for kv in re.finditer(r'(x|y|w|h):(-?\d+)', rest):
+                    key = kv.group(1)
+                    val = int(kv.group(2))
+                    if key == "w":
+                        el["width"] = val
+                    elif key == "h":
+                        el["height"] = val
+                    else:
+                        el[key] = val
+                el["in_viewport"] = "visible" in rest
+                elements.append(el)
+        return elements
+
+    def load_full_json(self) -> dict:
+        """Compatibility shim: load flat text and wrap in the old JSON structure."""
+        elements = self.load_full_text()
+        if not elements:
+            return {}
+        # Check if it's a diff (has prefixed elements) or full traversal
+        has_diff = any(e.get("prefix") in ("+", "-", "~") for e in elements)
+        if has_diff:
+            added = [e for e in elements if e.get("prefix") == "+"]
+            removed = [e for e in elements if e.get("prefix") == "-"]
+            modified = [e for e in elements if e.get("prefix") == "~"]
+            return {"diff": {"added": added, "removed": removed, "modified": modified}}
+        else:
+            # Strip prefix key for clean elements
+            clean = [{k: v for k, v in e.items() if k != "prefix"} for e in elements]
+            return {"traversal": {"elements": clean, "stats": {"truncated": len(clean) >= 2000}}}
 
     def __repr__(self):
         return f"ToolResult(status={self.status}, pid={self.pid}, app={self.app}, summary={self.summary!r})"
@@ -414,10 +468,10 @@ def test_visible_elements(client: MCPClient, pid: int) -> bool:
         passed = False
 
     # Check guidance line
-    if "DO NOT read the full file" in raw:
-        ok("Refresh summary has guidance line")
+    if "hint:" in raw or "grep" in raw:
+        ok("Refresh summary has grep hint")
     else:
-        fail("Refresh summary missing guidance line")
+        fail("Refresh summary missing grep hint")
         passed = False
 
     # Check visible_elements section
@@ -459,10 +513,10 @@ def test_visible_elements(client: MCPClient, pid: int) -> bool:
         else:
             fail("Click summary missing file_size line")
             passed = False
-        if "DO NOT read the full file" in click_raw:
-            ok("Click summary has guidance line")
+        if "hint:" in click_raw or "grep" in click_raw:
+            ok("Click summary has grep hint")
         else:
-            fail("Click summary missing guidance line")
+            fail("Click summary missing grep hint")
             passed = False
         # visible_elements may or may not be present depending on diff.added
         if "visible_elements:" in click_raw:
