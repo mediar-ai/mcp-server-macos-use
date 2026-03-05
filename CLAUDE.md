@@ -31,7 +31,9 @@ Always use `xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift` for bot
 MCP tool responses are saved as flat text files to `/tmp/macos-use/` to reduce context bloat. Each tool call returns a compact summary + file path instead of the full traversal data.
 
 **Reading responses:**
-- The summary includes status, PID, app name, file path, and a brief description of what happened
+- The summary includes status, PID, app name, file path, screenshot path, and a brief description of what happened
+- A PNG screenshot of the target window is saved alongside each text file (same name, `.png` extension)
+- Screenshot path appears as `screenshot: /tmp/macos-use/<timestamp>_<tool>.png` in the summary
 - To find specific elements: `grep -n "AXButton" /tmp/macos-use/<file>.txt`
 - To get coordinates for an element: `grep "search text" /tmp/macos-use/<file>.txt`
 - Each line is one element: `[AXButton (button)] "Open" x:680 y:520 w:80 h:30 visible`

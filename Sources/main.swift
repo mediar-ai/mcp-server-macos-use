@@ -217,6 +217,7 @@ struct ToolResponse: Codable {
 /// and return its bounds for viewport scoping.
 func findSheetBounds(pid: pid_t) -> CGRect? {
     let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 5.0)
 
     // Check all windows for AXSheet children
     var windowsRef: CFTypeRef?
@@ -224,6 +225,7 @@ func findSheetBounds(pid: pid_t) -> CGRect? {
           let windows = windowsRef as? [AXUIElement] else { return nil }
 
     for window in windows {
+        AXUIElementSetMessagingTimeout(window, 5.0)
         // Look for AXSheet role among children
         var childCount: CFIndex = 0
         guard AXUIElementGetAttributeValueCount(window, kAXChildrenAttribute as CFString, &childCount) == .success,
@@ -235,6 +237,7 @@ func findSheetBounds(pid: pid_t) -> CGRect? {
         let children = cfArray as [AnyObject]
         for child in children {
             let childElement = child as! AXUIElement
+            AXUIElementSetMessagingTimeout(childElement, 5.0)
             var roleRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(childElement, kAXRoleAttribute as CFString, &roleRef) == .success,
                   let role = roleRef as? String else { continue }
@@ -271,6 +274,7 @@ func getWindowContainingPoint(appElement: AXUIElement, point: CGPoint) -> (eleme
     if AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
        let windows = windowsRef as? [AXUIElement] {
         for window in windows {
+            AXUIElementSetMessagingTimeout(window, 5.0)
             guard let frame = getAXElementFrame(window) else { continue }
             if frame.contains(point) {
                 fputs("log: getWindowContainingPoint: matched window \(frame) for point \(point)\n", stderr)
@@ -282,6 +286,7 @@ func getWindowContainingPoint(appElement: AXUIElement, point: CGPoint) -> (eleme
     var winRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(appElement, "AXMainWindow" as CFString, &winRef) == .success else { return nil }
     let win = winRef as! AXUIElement
+    AXUIElementSetMessagingTimeout(win, 5.0)
     guard let frame = getAXElementFrame(win) else { return nil }
     fputs("log: getWindowContainingPoint: no window contains \(point), falling back to main window \(frame)\n", stderr)
     return (win, frame)
@@ -290,6 +295,7 @@ func getWindowContainingPoint(appElement: AXUIElement, point: CGPoint) -> (eleme
 /// Get window bounds directly from the accessibility API
 func getWindowBoundsFromAPI(pid: pid_t) -> CGRect? {
     let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 5.0)
 
     var windowValue: CFTypeRef?
     guard AXUIElementCopyAttributeValue(appElement, "AXMainWindow" as CFString, &windowValue) == .success else {
@@ -315,6 +321,133 @@ func getWindowBoundsFromAPI(pid: pid_t) -> CGRect? {
     AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
 
     return CGRect(origin: position, size: size)
+}
+
+/// Capture a screenshot of the window(s) belonging to a given PID and save as PNG.
+/// If `clickPoint` is provided (screen coordinates), draws a red crosshair at that location.
+/// Returns the file path on success, nil on failure.
+func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint? = nil) -> String? {
+    // Get the list of windows for this PID
+    guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        fputs("warning: captureWindowScreenshot: could not get window list\n", stderr)
+        return nil
+    }
+
+    // Find the main window ID for this PID
+    var targetWindowID: CGWindowID? = nil
+    var windowBoundsDict: CFDictionary? = nil
+    for window in windowList {
+        guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
+              ownerPID == pid,
+              let layer = window[kCGWindowLayer as String] as? Int,
+              layer == 0, // normal window layer
+              let windowID = window[kCGWindowNumber as String] as? CGWindowID else {
+            continue
+        }
+        targetWindowID = windowID
+        windowBoundsDict = window[kCGWindowBounds as String] as! CFDictionary?
+        fputs("log: captureWindowScreenshot: found window \(windowID), boundsDict=\(windowBoundsDict != nil ? "yes" : "nil")\n", stderr)
+        break
+    }
+
+    guard let windowID = targetWindowID else {
+        fputs("warning: captureWindowScreenshot: no on-screen window found for PID \(pid)\n", stderr)
+        return nil
+    }
+
+    // Capture just this window — use a short timeout approach:
+    // Try the capture in a detached thread and bail if it takes too long
+    // (CGWindowListCreateImage can block indefinitely without screen recording permission)
+    fputs("log: captureWindowScreenshot: starting image capture for window \(windowID)...\n", stderr)
+    var capturedImage: CGImage? = nil
+    let captureGroup = DispatchGroup()
+    captureGroup.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        capturedImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
+        captureGroup.leave()
+    }
+    let captureResult = captureGroup.wait(timeout: .now() + 3.0)
+    if captureResult == .timedOut {
+        fputs("warning: captureWindowScreenshot: CGWindowListCreateImage timed out (3s) — likely missing screen recording permission\n", stderr)
+        return nil
+    }
+    guard let image = capturedImage else {
+        fputs("warning: captureWindowScreenshot: CGWindowListCreateImage failed for window \(windowID)\n", stderr)
+        return nil
+    }
+
+    // Draw click point crosshair if provided
+    var finalImage = image
+    fputs("log: captureWindowScreenshot: clickPoint=\(clickPoint?.debugDescription ?? "nil"), boundsDict=\(windowBoundsDict != nil ? "present" : "nil")\n", stderr)
+    if let clickPoint = clickPoint, let boundsDict = windowBoundsDict {
+        var windowRect = CGRect.zero
+        CGRectMakeWithDictionaryRepresentation(boundsDict, &windowRect)
+
+        // Convert screen coordinates to image coordinates
+        // CGWindowListCreateImage with .boundsIgnoreFraming may include shadow, so we
+        // compute the offset from the window's screen origin to the image pixel space.
+        let imageWidth = CGFloat(image.width)
+        let imageHeight = CGFloat(image.height)
+        // Scale factor: image pixels may differ from window points (Retina)
+        let scaleX = imageWidth / windowRect.width
+        let scaleY = imageHeight / windowRect.height
+        let localX = (clickPoint.x - windowRect.origin.x) * scaleX
+        let localY = (clickPoint.y - windowRect.origin.y) * scaleY
+
+        fputs("log: captureWindowScreenshot: drawing crosshair at screen(\(clickPoint.x),\(clickPoint.y)) → image(\(localX),\(localY)) windowOrigin(\(windowRect.origin.x),\(windowRect.origin.y)) scale(\(scaleX),\(scaleY))\n", stderr)
+
+        // Draw crosshair on the image
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        if let ctx = CGContext(data: nil, width: image.width, height: image.height,
+                               bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            // Draw original image
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight))
+
+            // Flip Y for CoreGraphics drawing (origin is bottom-left)
+            let drawX = localX
+            let drawY = imageHeight - localY
+
+            // Red crosshair
+            ctx.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+            ctx.setLineWidth(2.0 * max(scaleX, scaleY))
+
+            let armLength: CGFloat = 15 * max(scaleX, scaleY)
+            // Horizontal line
+            ctx.move(to: CGPoint(x: drawX - armLength, y: drawY))
+            ctx.addLine(to: CGPoint(x: drawX + armLength, y: drawY))
+            // Vertical line
+            ctx.move(to: CGPoint(x: drawX, y: drawY - armLength))
+            ctx.addLine(to: CGPoint(x: drawX, y: drawY + armLength))
+            ctx.strokePath()
+
+            // Circle around crosshair
+            ctx.setLineWidth(1.5 * max(scaleX, scaleY))
+            let radius: CGFloat = 10 * max(scaleX, scaleY)
+            ctx.addEllipse(in: CGRect(x: drawX - radius, y: drawY - radius, width: radius * 2, height: radius * 2))
+            ctx.strokePath()
+
+            if let annotatedImage = ctx.makeImage() {
+                finalImage = annotatedImage
+            }
+        }
+    }
+
+    // Convert to PNG data and write to file
+    let bitmapRep = NSBitmapImageRep(cgImage: finalImage)
+    guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
+        fputs("warning: captureWindowScreenshot: failed to create PNG data\n", stderr)
+        return nil
+    }
+
+    do {
+        try pngData.write(to: URL(fileURLWithPath: outputPath))
+        fputs("log: captureWindowScreenshot: saved screenshot to \(outputPath) (\(pngData.count) bytes)\n", stderr)
+        return outputPath
+    } catch {
+        fputs("warning: captureWindowScreenshot: failed to write screenshot: \(error)\n", stderr)
+        return nil
+    }
 }
 
 /// Enrich a ResponseData with in_viewport metadata for each element
@@ -515,7 +648,7 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
 
 /// Build a concise text summary for the MCP response instead of returning the full JSON.
 /// The full JSON is written to a file; this summary contains just the key info + file path.
-func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResponse: ToolResponse, filepath: String, fileSize: Int) -> String {
+func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResponse: ToolResponse, filepath: String, fileSize: Int, screenshotPath: String? = nil) -> String {
     var lines: [String] = []
 
     // Status line
@@ -546,6 +679,9 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
     }
     lines.append("file_size: \(fileSize) bytes (\(elementCount) elements)")
     lines.append("hint: grep -n 'AXButton' \(filepath)  # search by role or text")
+    if let screenshotPath = screenshotPath {
+        lines.append("screenshot: \(screenshotPath)")
+    }
 
     // Errors if any
     if let err = toolResponse.primaryActionError {
@@ -569,10 +705,19 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         }
 
     case "macos-use_click_and_traverse":
-        let x = params.arguments?["x"]?.doubleValue ?? params.arguments?["x"]?.intValue.map(Double.init) ?? 0
-        let y = params.arguments?["y"]?.doubleValue ?? params.arguments?["y"]?.intValue.map(Double.init) ?? 0
+        let isDoubleClick = params.arguments?["doubleClick"]?.boolValue ?? false
+        let isRightClick = params.arguments?["rightClick"]?.boolValue ?? false
+        let clickType = isDoubleClick ? "Double-clicked" : isRightClick ? "Right-clicked" : "Clicked"
         let diffSummary = buildDiffSummary(toolResponse.diff)
-        summaryLine = "Clicked at (\(Int(x)),\(Int(y))). \(diffSummary)"
+        if let elemSearch = params.arguments?["element"]?.stringValue {
+            let roleFilter = params.arguments?["role"]?.stringValue
+            let roleDesc = roleFilter != nil ? " [\(roleFilter!)]" : ""
+            summaryLine = "\(clickType) element '\(elemSearch)'\(roleDesc). \(diffSummary)"
+        } else {
+            let x = params.arguments?["x"]?.doubleValue ?? params.arguments?["x"]?.intValue.map(Double.init) ?? 0
+            let y = params.arguments?["y"]?.doubleValue ?? params.arguments?["y"]?.intValue.map(Double.init) ?? 0
+            summaryLine = "\(clickType) at (\(Int(x)),\(Int(y))). \(diffSummary)"
+        }
 
     case "macos-use_type_and_traverse":
         let text = params.arguments?["text"]?.stringValue ?? ""
@@ -933,6 +1078,7 @@ func findElementByText(root: AXUIElement, text: String, viewport: CGRect, maxDep
 /// scroll toward the target and keep probing until an element with text appears.
 func scrollIntoViewIfNeeded(pid: pid_t, point: CGPoint) async -> CGPoint {
     let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 5.0)
 
     guard let (windowElement, windowBounds) = getWindowContainingPoint(appElement: appElement, point: point) else {
         fputs("log: scrollIntoViewIfNeeded: could not get window bounds, using original point\n", stderr)
@@ -1081,12 +1227,16 @@ func setupAndStartServer() async throws -> Server {
         "type": .string("object"),
         "properties": .object([
             "pid": .object(["type": .string("number"), "description": .string("REQUIRED. PID of the target application window.")]),
-            "x": .object(["type": .string("number"), "description": .string("REQUIRED. X coordinate for the click (top-left of element).")]),
-            "y": .object(["type": .string("number"), "description": .string("REQUIRED. Y coordinate for the click (top-left of element).")]),
+            "x": .object(["type": .string("number"), "description": .string("X coordinate for the click (top-left of element). Required unless 'element' is provided.")]),
+            "y": .object(["type": .string("number"), "description": .string("Y coordinate for the click (top-left of element). Required unless 'element' is provided.")]),
             "width": .object(["type": .string("number"), "description": .string("Optional. Element width from traversal. When provided with height, click lands at center (x+width/2, y+height/2).")]),
-            "height": .object(["type": .string("number"), "description": .string("Optional. Element height from traversal. When provided with width, click lands at center (x+width/2, y+height/2).")])
+            "height": .object(["type": .string("number"), "description": .string("Optional. Element height from traversal. When provided with width, click lands at center (x+width/2, y+height/2).")]),
+            "element": .object(["type": .string("string"), "description": .string("Optional. Case-insensitive partial text match to find and click an element (e.g. \"Open\", \"Submit\"). Searches visible elements in the accessibility tree. First match is clicked. Alternative to x/y coordinates.")]),
+            "role": .object(["type": .string("string"), "description": .string("Optional. Filter element search by accessibility role. Common roles: AXButton, AXLink, AXTextField, AXTextArea, AXCheckBox, AXRadioButton, AXPopUpButton, AXComboBox, AXSlider, AXMenuItem, AXMenuButton, AXTab, AXStaticText, AXImage, AXGroup, AXCell, AXRow.")]),
+            "doubleClick": .object(["type": .string("boolean"), "description": .string("Optional. If true, performs a double-click instead of a single click.")]),
+            "rightClick": .object(["type": .string("boolean"), "description": .string("Optional. If true, performs a right-click (context menu) instead of a left click.")])
         ]),
-        "required": .array([.string("pid"), .string("x"), .string("y")])
+        "required": .array([.string("pid")])
     ])
     let clickTool = Tool(
         name: "macos-use_click_and_traverse",
@@ -1168,7 +1318,7 @@ func setupAndStartServer() async throws -> Server {
 
     let server = Server(
         name: "SwiftMacOSServerDirect", // Renamed slightly
-        version: "1.5.0", // Cross-app handoff detection
+        version: "1.6.0", // Screenshot capture, AX timeout protection
         capabilities: .init(
             tools: .init(listChanged: true)
         )
@@ -1216,6 +1366,7 @@ func setupAndStartServer() async throws -> Server {
         do {
             // --- Determine Action and Options from MCP Params ---
             let primaryAction: PrimaryAction
+            var lastClickPoint: CGPoint? = nil // Track click location for screenshot annotation
             var options = ActionOptions(traverseAfter: true, showAnimation: false) // MCP tools should return the tree by default, no visual highlighting
 
             // PID is required for click, type, press, refresh
@@ -1258,18 +1409,55 @@ func setupAndStartServer() async throws -> Server {
 
             case clickTool.name:
                 guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for click tool") }
-                let x = try getRequiredDouble(from: params.arguments, key: "x")
-                let y = try getRequiredDouble(from: params.arguments, key: "y")
-                let w = try getOptionalDouble(from: params.arguments, key: "width")
-                let h = try getOptionalDouble(from: params.arguments, key: "height")
-                // If width+height provided, compute exact center; otherwise use raw point (AX will center via lookup)
+
+                let elementSearch = params.arguments?["element"]?.stringValue
+                let roleFilter = params.arguments?["role"]?.stringValue
+
                 let rawPoint: CGPoint
-                if let w = w, let h = h {
-                    rawPoint = CGPoint(x: x + w / 2, y: y + h / 2)
-                    fputs("log: click_and_traverse: centering (\(x),\(y)) + size(\(w)×\(h)) → \(rawPoint)\n", stderr)
+                if let elementSearch = elementSearch {
+                    // --- Search mode: find element by text match ---
+                    fputs("log: click_and_traverse: searching for element '\(elementSearch)' (role: \(roleFilter ?? "any"))\n", stderr)
+                    let traversal: ResponseData = try await Task { @MainActor in
+                        return try traverseAccessibilityTree(pid: reqPid)
+                    }.value
+                    let windowBounds = getWindowBoundsFromTraversal(traversal) ?? getWindowBoundsFromAPI(pid: reqPid)
+                    let enriched = enrichResponseData(traversal, windowBounds: windowBounds)
+
+                    let searchLower = elementSearch.lowercased()
+                    let matches = enriched.elements.filter { elem in
+                        guard let text = elem.text, !text.isEmpty,
+                              let _ = elem.x, let _ = elem.y,
+                              let w = elem.width, let h = elem.height,
+                              w > 0, h > 0 else { return false }
+                        let textMatch = text.lowercased().contains(searchLower)
+                        let roleMatch = roleFilter == nil || elem.role.lowercased().hasPrefix(roleFilter!.lowercased())
+                        return textMatch && roleMatch
+                    }
+
+                    guard let match = matches.first else {
+                        let roleHint = roleFilter != nil ? " with role '\(roleFilter!)'" : ""
+                        throw MCPError.invalidParams("No visible element matching '\(elementSearch)'\(roleHint) found in app (PID \(reqPid)). Use the traversal file to find available elements.")
+                    }
+                    let matchX = match.x!, matchY = match.y!, matchW = match.width!, matchH = match.height!
+                    rawPoint = CGPoint(x: matchX + matchW / 2, y: matchY + matchH / 2)
+                    let matchCount = matches.count
+                    fputs("log: click_and_traverse: found \(matchCount) match(es) for '\(elementSearch)'. Clicking '\(match.text ?? "")' [\(match.role)] at center (\(rawPoint.x),\(rawPoint.y))\n", stderr)
                 } else {
-                    rawPoint = CGPoint(x: x, y: y)
+                    // --- Coordinate mode ---
+                    guard let x = try getOptionalDouble(from: params.arguments, key: "x"),
+                          let y = try getOptionalDouble(from: params.arguments, key: "y") else {
+                        throw MCPError.invalidParams("Either 'element' or both 'x' and 'y' must be provided for click tool")
+                    }
+                    let w = try getOptionalDouble(from: params.arguments, key: "width")
+                    let h = try getOptionalDouble(from: params.arguments, key: "height")
+                    if let w = w, let h = h {
+                        rawPoint = CGPoint(x: x + w / 2, y: y + h / 2)
+                        fputs("log: click_and_traverse: centering (\(x),\(y)) + size(\(w)×\(h)) → \(rawPoint)\n", stderr)
+                    } else {
+                        rawPoint = CGPoint(x: x, y: y)
+                    }
                 }
+
                 // Activate the target app before clicking so the click registers correctly
                 if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
                     runningApp.activate(options: [])
@@ -1278,7 +1466,16 @@ func setupAndStartServer() async throws -> Server {
                 }
                 // Auto-scroll element into view if it's outside the visible window area
                 let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)
-                primaryAction = .input(action: .click(point: adjustedPoint))
+                lastClickPoint = adjustedPoint
+                let isDoubleClick = params.arguments?["doubleClick"]?.boolValue ?? false
+                let isRightClick = params.arguments?["rightClick"]?.boolValue ?? false
+                if isDoubleClick {
+                    primaryAction = .input(action: .doubleClick(point: adjustedPoint))
+                } else if isRightClick {
+                    primaryAction = .input(action: .rightClick(point: adjustedPoint))
+                } else {
+                    primaryAction = .input(action: .click(point: adjustedPoint))
+                }
                 options.pidForTraversal = reqPid
                 options.showDiff = true // enables traverseBefore automatically
                 hasDiff = true
@@ -1406,7 +1603,17 @@ func setupAndStartServer() async throws -> Server {
             try? resultTextString.write(toFile: filepath, atomically: true, encoding: .utf8)
             fputs("log: handler(CallTool): wrote full response to \(filepath) (\(resultTextString.count) bytes)\n", stderr)
 
-            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultTextString.count)
+            // --- Capture window screenshot ---
+            var screenshotPath: String? = nil
+            let screenshotFilename = "\(timestamp)_\(safeName).png"
+            let screenshotFilepath = "\(outputDir)/\(screenshotFilename)"
+            // Use the effective PID (could be app-switched)
+            let screenshotPid = toolResponse.appSwitchPid ?? toolResponse.traversalPid ?? options.pidForTraversal
+            if let pid = screenshotPid {
+                screenshotPath = captureWindowScreenshot(pid: pid, outputPath: screenshotFilepath, clickPoint: lastClickPoint)
+            }
+
+            let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultTextString.count, screenshotPath: screenshotPath)
             fputs("log: handler(CallTool): returning compact summary (\(summary.count) chars)\n", stderr)
 
             return .init(content: [.text(summary)], isError: isError)
