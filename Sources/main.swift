@@ -1347,11 +1347,17 @@ func setupAndStartServer() async throws -> Server {
         version: "1.6.0",
         instructions: """
         Every tool call returns a compact text summary. Key fields in the summary:
-        - file: path to the full accessibility tree (.txt). Use Grep to search for elements by role or text.
+        - file: path to the full accessibility tree (.txt). Use Grep/Read on the file to find specific elements.
         - screenshot: path to a PNG screenshot of the target window. IMPORTANT: Use the Read tool on this .png file to visually verify the screen state — the accessibility tree alone can be misleading (wrong element matches, stale data, etc.).
         - visible_elements: a sample of on-screen elements with coordinates.
 
         Always check the screenshot after interactions (click, type, press) to confirm the action had the intended visual effect.
+
+        CRITICAL — Clicking elements:
+        - NEVER estimate coordinates visually from screenshots. Screenshot pixel positions do NOT match screen coordinates (they differ by the window origin offset).
+        - ALWAYS get coordinates from the accessibility tree (.txt file) or use the `element` parameter for text-based search.
+        - Each line in the .txt file has the format: [Role] "text" x:N y:N w:W h:H visible
+        - Pass these x, y, w, h values directly to click_and_traverse. The tool auto-centers the click at (x+w/2, y+h/2).
         """,
         capabilities: .init(
             tools: .init(listChanged: true)
