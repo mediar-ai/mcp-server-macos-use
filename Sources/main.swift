@@ -209,6 +209,9 @@ struct ToolResponse: Codable {
 
     // Sheet/dialog detection
     var sheetDetected: Bool?
+
+    // Window bounds from traversal (used to match correct CGWindow for screenshots)
+    var windowBounds: CGRect?
 }
 
 // --- Sheet Detection ---
@@ -326,28 +329,50 @@ func getWindowBoundsFromAPI(pid: pid_t) -> CGRect? {
 /// Capture a screenshot of the window(s) belonging to a given PID and save as PNG.
 /// If `clickPoint` is provided (screen coordinates), draws a red crosshair at that location.
 /// Returns the file path on success, nil on failure.
-func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint? = nil) -> String? {
+func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint? = nil, traversalWindowBounds: CGRect? = nil) -> String? {
     // Get the list of windows for this PID
     guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
         fputs("warning: captureWindowScreenshot: could not get window list\n", stderr)
         return nil
     }
 
-    // Find the main window ID for this PID
+    // Find the correct window for this PID.
+    // Strategy: if we have traversal window bounds, match the CGWindow whose bounds
+    // best overlap with the traversal window. Otherwise fall back to largest window.
     var targetWindowID: CGWindowID? = nil
     var windowBoundsDict: CFDictionary? = nil
+    var bestScore: CGFloat = 0
+
     for window in windowList {
         guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
               ownerPID == pid,
               let layer = window[kCGWindowLayer as String] as? Int,
-              layer == 0, // normal window layer
+              layer == 0,
               let windowID = window[kCGWindowNumber as String] as? CGWindowID else {
             continue
         }
-        targetWindowID = windowID
-        windowBoundsDict = window[kCGWindowBounds as String] as! CFDictionary?
-        fputs("log: captureWindowScreenshot: found window \(windowID), boundsDict=\(windowBoundsDict != nil ? "yes" : "nil")\n", stderr)
-        break
+        let bounds = window[kCGWindowBounds as String] as! CFDictionary
+        var rect = CGRect.zero
+        CGRectMakeWithDictionaryRepresentation(bounds, &rect)
+
+        let score: CGFloat
+        if let twb = traversalWindowBounds {
+            // Score by intersection area with the traversal window
+            let intersection = rect.intersection(twb)
+            score = intersection.isNull ? 0 : intersection.width * intersection.height
+        } else {
+            // Fallback: prefer the largest window
+            score = rect.width * rect.height
+        }
+
+        if score > bestScore {
+            bestScore = score
+            targetWindowID = windowID
+            windowBoundsDict = bounds
+        }
+    }
+    if let windowID = targetWindowID {
+        fputs("log: captureWindowScreenshot: selected window \(windowID) (score=\(Int(bestScore)))\n", stderr)
     }
 
     guard let windowID = targetWindowID else {
@@ -563,6 +588,7 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
     response.traversalPid = result.traversalPid
     response.primaryActionError = result.primaryActionError
     response.traversalError = result.traversalAfterError ?? result.traversalBeforeError
+    response.windowBounds = windowBounds
     response.sheetDetected = sheetDetected ? true : nil
 
     if hasDiff, let rawDiff = result.traversalDiff {
@@ -1317,8 +1343,16 @@ func setupAndStartServer() async throws -> Server {
     fputs("log: setupAndStartServer: defined \(allTools.count) tools: \(allTools.map { $0.name })\n", stderr)
 
     let server = Server(
-        name: "SwiftMacOSServerDirect", // Renamed slightly
-        version: "1.6.0", // Screenshot capture, AX timeout protection
+        name: "SwiftMacOSServerDirect",
+        version: "1.6.0",
+        instructions: """
+        Every tool call returns a compact text summary. Key fields in the summary:
+        - file: path to the full accessibility tree (.txt). Use Grep to search for elements by role or text.
+        - screenshot: path to a PNG screenshot of the target window. IMPORTANT: Use the Read tool on this .png file to visually verify the screen state — the accessibility tree alone can be misleading (wrong element matches, stale data, etc.).
+        - visible_elements: a sample of on-screen elements with coordinates.
+
+        Always check the screenshot after interactions (click, type, press) to confirm the action had the intended visual effect.
+        """,
         capabilities: .init(
             tools: .init(listChanged: true)
         )
@@ -1610,7 +1644,7 @@ func setupAndStartServer() async throws -> Server {
             // Use the effective PID (could be app-switched)
             let screenshotPid = toolResponse.appSwitchPid ?? toolResponse.traversalPid ?? options.pidForTraversal
             if let pid = screenshotPid {
-                screenshotPath = captureWindowScreenshot(pid: pid, outputPath: screenshotFilepath, clickPoint: lastClickPoint)
+                screenshotPath = captureWindowScreenshot(pid: pid, outputPath: screenshotFilepath, clickPoint: lastClickPoint, traversalWindowBounds: toolResponse.windowBounds)
             }
 
             let summary = buildCompactSummary(toolName: params.name, params: params, toolResponse: toolResponse, filepath: filepath, fileSize: resultTextString.count, screenshotPath: screenshotPath)
