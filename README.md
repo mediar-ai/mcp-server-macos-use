@@ -8,9 +8,7 @@ You can use it in Claude Desktop or other compatible MCP-client.
 
 The server listens for MCP commands over standard input/output (`stdio`) and exposes several tools to interact with applications.
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/b43622a3-3d20-4026-b02f-e9add06afe2b" alt="macos-use demo" width="800" />
-</p>
+https://github.com/user-attachments/assets/b43622a3-3d20-4026-b02f-e9add06afe2b
 
 
 ## Available Tools
