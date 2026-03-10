@@ -8,6 +8,8 @@ You can use it in Claude Desktop or other compatible MCP-client.
 
 The server listens for MCP commands over standard input/output (`stdio`) and exposes several tools to interact with applications.
 
+![Image](https://github.com/user-attachments/assets/21629c04-c8b4-4fac-80d9-93e8c7984ce3)
+
 
 https://github.com/user-attachments/assets/b43622a3-3d20-4026-b02f-e9add06afe2b
 
