@@ -10,6 +10,8 @@ The server listens for MCP commands over standard input/output (`stdio`) and exp
 
 https://github.com/user-attachments/assets/cd203171-bac6-4124-9a58-59947a25be07
 
+https://github.com/user-attachments/assets/f274560a-559f-4140-b133-c0b5c500a02d
+
 
 ## Available Tools
 
