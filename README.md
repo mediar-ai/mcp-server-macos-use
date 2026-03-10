@@ -1,5 +1,7 @@
 # mcp-server-macos-use
 
+Official website: https://macos-use.dev/
+
 Model Context Protocol (MCP) server in Swift. It allows controlling macOS applications by leveraging the accessibility APIs, primarily through the `MacosUseSDK`.
 
 You can use it in Claude Desktop or other compatible MCP-client.
