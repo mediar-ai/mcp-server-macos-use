@@ -329,6 +329,11 @@ func getWindowBoundsFromAPI(pid: pid_t) -> CGRect? {
 /// Capture a screenshot of the window(s) belonging to a given PID and save as PNG.
 /// If `clickPoint` is provided (screen coordinates), draws a red crosshair at that location.
 /// Returns the file path on success, nil on failure.
+///
+/// IMPORTANT: The actual CGWindowListCreateImage call runs in a **subprocess**
+/// (screenshot-helper) so that the ReplayKit framework — loaded as a side-effect
+/// by macOS — dies with the subprocess instead of spinning at ~19% CPU forever
+/// in the parent MCP server process.
 func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint? = nil, traversalWindowBounds: CGRect? = nil) -> String? {
     // Get the list of windows for this PID
     guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
@@ -357,11 +362,9 @@ func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint
 
         let score: CGFloat
         if let twb = traversalWindowBounds {
-            // Score by intersection area with the traversal window
             let intersection = rect.intersection(twb)
             score = intersection.isNull ? 0 : intersection.width * intersection.height
         } else {
-            // Fallback: prefer the largest window
             score = rect.width * rect.height
         }
 
@@ -380,99 +383,82 @@ func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint
         return nil
     }
 
-    // Capture just this window — use a short timeout approach:
-    // Try the capture in a detached thread and bail if it takes too long
-    // (CGWindowListCreateImage can block indefinitely without screen recording permission)
-    fputs("log: captureWindowScreenshot: starting image capture for window \(windowID)...\n", stderr)
-    var capturedImage: CGImage? = nil
-    let captureGroup = DispatchGroup()
-    captureGroup.enter()
-    DispatchQueue.global(qos: .userInitiated).async {
-        capturedImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
-        captureGroup.leave()
-    }
-    let captureResult = captureGroup.wait(timeout: .now() + 3.0)
-    if captureResult == .timedOut {
-        fputs("warning: captureWindowScreenshot: CGWindowListCreateImage timed out (3s) — likely missing screen recording permission\n", stderr)
-        return nil
-    }
-    guard let image = capturedImage else {
-        fputs("warning: captureWindowScreenshot: CGWindowListCreateImage failed for window \(windowID)\n", stderr)
+    // Find the screenshot-helper binary next to our own executable
+    let myPath = CommandLine.arguments[0]
+    let myDir = (myPath as NSString).deletingLastPathComponent
+    let helperPath = (myDir as NSString).appendingPathComponent("screenshot-helper")
+
+    guard FileManager.default.fileExists(atPath: helperPath) else {
+        fputs("warning: captureWindowScreenshot: screenshot-helper not found at \(helperPath)\n", stderr)
         return nil
     }
 
-    // Draw click point crosshair if provided
-    var finalImage = image
-    fputs("log: captureWindowScreenshot: clickPoint=\(clickPoint?.debugDescription ?? "nil"), boundsDict=\(windowBoundsDict != nil ? "present" : "nil")\n", stderr)
+    // Build arguments for the subprocess
+    var helperArgs = [String(windowID), outputPath]
+
     if let clickPoint = clickPoint, let boundsDict = windowBoundsDict {
         var windowRect = CGRect.zero
         CGRectMakeWithDictionaryRepresentation(boundsDict, &windowRect)
-
-        // Convert screen coordinates to image coordinates
-        // CGWindowListCreateImage with .boundsIgnoreFraming may include shadow, so we
-        // compute the offset from the window's screen origin to the image pixel space.
-        let imageWidth = CGFloat(image.width)
-        let imageHeight = CGFloat(image.height)
-        // Scale factor: image pixels may differ from window points (Retina)
-        let scaleX = imageWidth / windowRect.width
-        let scaleY = imageHeight / windowRect.height
-        let localX = (clickPoint.x - windowRect.origin.x) * scaleX
-        let localY = (clickPoint.y - windowRect.origin.y) * scaleY
-
-        fputs("log: captureWindowScreenshot: drawing crosshair at screen(\(clickPoint.x),\(clickPoint.y)) → image(\(localX),\(localY)) windowOrigin(\(windowRect.origin.x),\(windowRect.origin.y)) scale(\(scaleX),\(scaleY))\n", stderr)
-
-        // Draw crosshair on the image
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        if let ctx = CGContext(data: nil, width: image.width, height: image.height,
-                               bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
-                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-            // Draw original image
-            ctx.draw(image, in: CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight))
-
-            // Flip Y for CoreGraphics drawing (origin is bottom-left)
-            let drawX = localX
-            let drawY = imageHeight - localY
-
-            // Red crosshair
-            ctx.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
-            ctx.setLineWidth(2.0 * max(scaleX, scaleY))
-
-            let armLength: CGFloat = 15 * max(scaleX, scaleY)
-            // Horizontal line
-            ctx.move(to: CGPoint(x: drawX - armLength, y: drawY))
-            ctx.addLine(to: CGPoint(x: drawX + armLength, y: drawY))
-            // Vertical line
-            ctx.move(to: CGPoint(x: drawX, y: drawY - armLength))
-            ctx.addLine(to: CGPoint(x: drawX, y: drawY + armLength))
-            ctx.strokePath()
-
-            // Circle around crosshair
-            ctx.setLineWidth(1.5 * max(scaleX, scaleY))
-            let radius: CGFloat = 10 * max(scaleX, scaleY)
-            ctx.addEllipse(in: CGRect(x: drawX - radius, y: drawY - radius, width: radius * 2, height: radius * 2))
-            ctx.strokePath()
-
-            if let annotatedImage = ctx.makeImage() {
-                finalImage = annotatedImage
-            }
-        }
+        helperArgs += ["--click", "\(clickPoint.x),\(clickPoint.y)"]
+        helperArgs += ["--bounds", "\(windowRect.origin.x),\(windowRect.origin.y),\(windowRect.width),\(windowRect.height)"]
+        fputs("log: captureWindowScreenshot: invoking subprocess with click=\(clickPoint.x),\(clickPoint.y) bounds=\(windowRect)\n", stderr)
     }
 
-    // Convert to PNG data and write to file
-    let bitmapRep = NSBitmapImageRep(cgImage: finalImage)
-    guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
-        fputs("warning: captureWindowScreenshot: failed to create PNG data\n", stderr)
-        return nil
-    }
+    fputs("log: captureWindowScreenshot: launching screenshot-helper for window \(windowID)...\n", stderr)
+
+    // Run screenshot-helper in a subprocess — ReplayKit dies when it exits
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: helperPath)
+    process.arguments = helperArgs
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
 
     do {
-        try pngData.write(to: URL(fileURLWithPath: outputPath))
-        fputs("log: captureWindowScreenshot: saved screenshot to \(outputPath) (\(pngData.count) bytes)\n", stderr)
-        return outputPath
+        try process.run()
     } catch {
-        fputs("warning: captureWindowScreenshot: failed to write screenshot: \(error)\n", stderr)
+        fputs("warning: captureWindowScreenshot: failed to launch screenshot-helper: \(error)\n", stderr)
         return nil
     }
+
+    // Wait with timeout
+    let timeoutSeconds = 5.0
+    let deadline = DispatchTime.now() + timeoutSeconds
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async {
+        process.waitUntilExit()
+        group.leave()
+    }
+
+    if group.wait(timeout: deadline) == .timedOut {
+        process.terminate()
+        fputs("warning: captureWindowScreenshot: screenshot-helper timed out (\(timeoutSeconds)s)\n", stderr)
+        return nil
+    }
+
+    // Forward stderr from the helper
+    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+    if !stderrData.isEmpty, let stderrStr = String(data: stderrData, encoding: .utf8) {
+        fputs(stderrStr, stderr)
+    }
+
+    guard process.terminationStatus == 0 else {
+        fputs("warning: captureWindowScreenshot: screenshot-helper exited with status \(process.terminationStatus)\n", stderr)
+        return nil
+    }
+
+    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    let result = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if let path = result, !path.isEmpty {
+        fputs("log: captureWindowScreenshot: screenshot saved via subprocess to \(path)\n", stderr)
+        return path
+    }
+
+    return nil
 }
 
 /// Enrich a ResponseData with in_viewport metadata for each element
