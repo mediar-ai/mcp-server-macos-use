@@ -38,8 +38,14 @@ func getRequiredDouble(from args: [String: Value]?, key: String) throws -> Doubl
         return Double(intValue)
     case .double(let doubleValue):
         return doubleValue
+    case .string(let stringValue):
+        if let doubleValue = Double(stringValue) {
+            fputs("log: getRequiredDouble: converting string \"\(stringValue)\" to double for key '\(key)'\n", stderr)
+            return doubleValue
+        }
+        throw MCPError.invalidParams("Invalid type for required number argument: '\(key)', string \"\(stringValue)\" is not a valid number")
     default:
-        throw MCPError.invalidParams("Invalid type for required number argument: '\(key)', expected Int or Double, got \(value)")
+        throw MCPError.invalidParams("Invalid type for required number argument: '\(key)', expected Int, Double, or numeric String, got \(value)")
     }
 }
 
@@ -57,9 +63,14 @@ func getRequiredInt(from args: [String: Value]?, key: String) throws -> Int {
             throw MCPError.invalidParams("Invalid type for required integer argument: '\(key)', received non-exact Double \(doubleValue)")
         }
     }
+    // Allow conversion from String (MCP clients may send numbers as strings)
+    if let stringValue = value.stringValue, let intValue = Int(stringValue) {
+        fputs("log: getRequiredInt: converting string \"\(stringValue)\" to int for key '\(key)'\n", stderr)
+        return intValue
+    }
     // Otherwise, require it to be an Int directly
     guard let intValue = value.intValue else {
-        throw MCPError.invalidParams("Invalid type for required integer argument: '\(key)', expected Int or exact Double, got \(value)")
+        throw MCPError.invalidParams("Invalid type for required integer argument: '\(key)', expected Int, exact Double, or numeric String, got \(value)")
     }
     return intValue
 }
@@ -76,8 +87,14 @@ func getOptionalDouble(from args: [String: Value]?, key: String) throws -> Doubl
         return Double(intValue)
     case .double(let doubleValue):
         return doubleValue
+    case .string(let stringValue):
+        if let doubleValue = Double(stringValue) {
+            fputs("log: getOptionalDouble: converting string \"\(stringValue)\" to double for key '\(key)'\n", stderr)
+            return doubleValue
+        }
+        throw MCPError.invalidParams("Invalid type for optional number argument: '\(key)', string \"\(stringValue)\" is not a valid number")
     default:
-        throw MCPError.invalidParams("Invalid type for optional number argument: '\(key)', expected Int or Double, got \(value)")
+        throw MCPError.invalidParams("Invalid type for optional number argument: '\(key)', expected Int, Double, or numeric String, got \(value)")
     }
 }
 
@@ -94,8 +111,13 @@ func getOptionalInt(from args: [String: Value]?, key: String) throws -> Int? {
             throw MCPError.invalidParams("Invalid type for optional integer argument: '\(key)', received non-exact Double \(doubleValue)")
         }
     }
+    // Allow conversion from String (MCP clients may send numbers as strings)
+    if let stringValue = value.stringValue, let intValue = Int(stringValue) {
+        fputs("log: getOptionalInt: converting string \"\(stringValue)\" to int for key '\(key)'\n", stderr)
+        return intValue
+    }
     guard let intValue = value.intValue else {
-        throw MCPError.invalidParams("Invalid type for optional integer argument: '\(key)', expected Int or exact Double, got \(value)")
+        throw MCPError.invalidParams("Invalid type for optional integer argument: '\(key)', expected Int, exact Double, or numeric String, got \(value)")
     }
     return intValue
 }
