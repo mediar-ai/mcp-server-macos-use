@@ -1268,13 +1268,20 @@ func setupAndStartServer() async throws -> Server {
             "element": .object(["type": .string("string"), "description": .string("Optional. Case-insensitive partial text match to find and click an element (e.g. \"Open\", \"Submit\"). Searches visible elements in the accessibility tree. First match is clicked. Alternative to x/y coordinates.")]),
             "role": .object(["type": .string("string"), "description": .string("Optional. Filter element search by accessibility role. Common roles: AXButton, AXLink, AXTextField, AXTextArea, AXCheckBox, AXRadioButton, AXPopUpButton, AXComboBox, AXSlider, AXMenuItem, AXMenuButton, AXTab, AXStaticText, AXImage, AXGroup, AXCell, AXRow.")]),
             "doubleClick": .object(["type": .string("boolean"), "description": .string("Optional. If true, performs a double-click instead of a single click.")]),
-            "rightClick": .object(["type": .string("boolean"), "description": .string("Optional. If true, performs a right-click (context menu) instead of a left click.")])
+            "rightClick": .object(["type": .string("boolean"), "description": .string("Optional. If true, performs a right-click (context menu) instead of a left click.")]),
+            "text": .object(["type": .string("string"), "description": .string("Optional. Text to type into the field after clicking. Combines click+type into one tool call.")]),
+            "pressKey": .object(["type": .string("string"), "description": .string("Optional. Key name to press after clicking (and typing, if 'text' is also provided). E.g. 'Return', 'Tab', 'Escape'. Combines click+type+press into one tool call.")]),
+            "pressKeyModifiers": .object([
+                "type": .string("array"),
+                "description": .string("Optional. Modifier keys to hold when pressing 'pressKey' (e.g., ['Command', 'Shift']). Valid: CapsLock, Shift, Control, Option, Command, Function, NumericPad, Help."),
+                "items": .object(["type": .string("string")])
+            ])
         ]),
         "required": .array([.string("pid")])
     ])
     let clickTool = Tool(
         name: "macos-use_click_and_traverse",
-        description: "Simulates a click at the given coordinates within the app specified by PID, then traverses its accessibility tree. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        description: "Simulates a click at the given coordinates within the app specified by PID, then traverses its accessibility tree. Optionally types text and/or presses a key after the click — all in one tool call. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
         inputSchema: clickSchema
     )
 
@@ -1282,14 +1289,19 @@ func setupAndStartServer() async throws -> Server {
         "type": .string("object"),
         "properties": .object([
             "pid": .object(["type": .string("number"), "description": .string("REQUIRED. PID of the target application window.")]),
-            "text": .object(["type": .string("string"), "description": .string("REQUIRED. Text to type.")])
-             // Add optional options here if needed later
-       ]),
+            "text": .object(["type": .string("string"), "description": .string("REQUIRED. Text to type.")]),
+            "pressKey": .object(["type": .string("string"), "description": .string("Optional. Key name to press after typing. E.g. 'Return', 'Tab', 'Escape'. Combines type+press into one tool call.")]),
+            "pressKeyModifiers": .object([
+                "type": .string("array"),
+                "description": .string("Optional. Modifier keys to hold when pressing 'pressKey' (e.g., ['Command', 'Shift']). Valid: CapsLock, Shift, Control, Option, Command, Function, NumericPad, Help."),
+                "items": .object(["type": .string("string")])
+            ])
+        ]),
         "required": .array([.string("pid"), .string("text")])
     ])
     let typeTool = Tool(
         name: "macos-use_type_and_traverse",
-        description: "Simulates typing text into the app specified by PID, then traverses its accessibility tree. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        description: "Simulates typing text into the app specified by PID, then traverses its accessibility tree. Optionally presses a key after typing — all in one tool call. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
         inputSchema: typeSchema
     )
 
@@ -1450,6 +1462,9 @@ func setupAndStartServer() async throws -> Server {
             // Track whether this tool returns a diff (click/type/press) or full traversal (open/refresh)
             var hasDiff = false
 
+            // Extra actions to perform after the primary action (type, press) before the final traversal
+            var additionalActions: [InputAction] = []
+
             switch params.name {
             case openAppTool.name:
                 let identifier = try getRequiredString(from: params.arguments, key: "identifier")
@@ -1528,6 +1543,15 @@ func setupAndStartServer() async throws -> Server {
                 options.showDiff = true // enables traverseBefore automatically
                 hasDiff = true
 
+                // Optional chained actions: type text and/or press a key after the click
+                if let textToType = params.arguments?["text"]?.stringValue, !textToType.isEmpty {
+                    additionalActions.append(.type(text: textToType))
+                }
+                if let keyName = params.arguments?["pressKey"]?.stringValue, !keyName.isEmpty {
+                    let keyFlags = try parseFlags(from: params.arguments?["pressKeyModifiers"])
+                    additionalActions.append(.press(keyName: keyName, flags: keyFlags))
+                }
+
             case typeTool.name:
                 guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for type tool") }
                 let text = try getRequiredString(from: params.arguments, key: "text")
@@ -1535,6 +1559,12 @@ func setupAndStartServer() async throws -> Server {
                 options.pidForTraversal = reqPid
                 options.showDiff = true
                 hasDiff = true
+
+                // Optional chained press after typing
+                if let keyName = params.arguments?["pressKey"]?.stringValue, !keyName.isEmpty {
+                    let keyFlags = try parseFlags(from: params.arguments?["pressKeyModifiers"])
+                    additionalActions.append(.press(keyName: keyName, flags: keyFlags))
+                }
 
             case pressKeyTool.name:
                 guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for press key tool") }
