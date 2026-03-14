@@ -1618,11 +1618,54 @@ func setupAndStartServer() async throws -> Server {
             }
 
             // --- Execute the Action using MacosUseSDK ---
-            let actionResult: ActionResult = await Task { @MainActor in
-                fputs("log: handler(CallTool): executing performAction on MainActor via Task...\n", stderr)
-                return await performAction(action: primaryAction, optionsInput: options)
-            }.value
-            fputs("log: handler(CallTool): performAction task completed.\n", stderr)
+            let actionResult: ActionResult
+            if additionalActions.isEmpty {
+                // Normal single-action path
+                actionResult = await Task { @MainActor in
+                    fputs("log: handler(CallTool): executing performAction on MainActor via Task...\n", stderr)
+                    return await performAction(action: primaryAction, optionsInput: options)
+                }.value
+                fputs("log: handler(CallTool): performAction task completed.\n", stderr)
+            } else {
+                // Composed multi-action path: click → type? → press? → final traversal
+                fputs("log: handler(CallTool): composed mode — \(additionalActions.count) additional action(s) after primary.\n", stderr)
+
+                // Step 1: Primary action with before traversal only (no after)
+                var primaryOpts = options
+                primaryOpts.traverseAfter = false
+                primaryOpts.showDiff = false
+                let primaryResult = await Task { @MainActor in
+                    return await performAction(action: primaryAction, optionsInput: primaryOpts)
+                }.value
+                fputs("log: handler(CallTool): composed — primary action done.\n", stderr)
+
+                // Step 2: Additional actions (type, press) — no traversal, just input
+                var minOpts = ActionOptions(showAnimation: false)
+                minOpts.pidForTraversal = options.pidForTraversal
+                for additionalAction in additionalActions {
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms between actions
+                    let _ = await Task { @MainActor in
+                        return await performAction(action: .input(action: additionalAction), optionsInput: minOpts)
+                    }.value
+                    fputs("log: handler(CallTool): composed — additional action \(additionalAction) done.\n", stderr)
+                }
+
+                // Step 3: Final traversal to capture the after state
+                var finalOpts = ActionOptions(traverseAfter: true, showAnimation: false)
+                finalOpts.pidForTraversal = options.pidForTraversal
+                let finalResult = await Task { @MainActor in
+                    return await performAction(action: .traverseOnly, optionsInput: finalOpts)
+                }.value
+                fputs("log: handler(CallTool): composed — final traversal done.\n", stderr)
+
+                // Combine: before from primary result, after from final traversal
+                var combined = primaryResult
+                combined.traversalAfter = finalResult.traversalAfter
+                combined.traversalAfterError = finalResult.traversalAfterError
+                // No diff in composed mode (before/after still present for context)
+                hasDiff = false
+                actionResult = combined
+            }
 
             // --- Restore cursor position after click ---
             if let pos = savedCursorPos,
