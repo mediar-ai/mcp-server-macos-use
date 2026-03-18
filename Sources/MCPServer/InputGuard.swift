@@ -37,7 +37,6 @@ final class InputGuard: @unchecked Sendable {
 
     // MARK: - Overlay
     private var overlayWindow: NSWindow?
-    private var overlayThread: Thread?
 
     // MARK: - Engage / Disengage
 
@@ -50,7 +49,7 @@ final class InputGuard: @unchecked Sendable {
 
         fputs("log: InputGuard: engaging — \(message)\n", stderr)
 
-        // 1. Show overlay on a dedicated AppKit thread
+        // 1. Show overlay on main thread
         showOverlay(message: message)
 
         // 2. Create the event tap
@@ -77,27 +76,28 @@ final class InputGuard: @unchecked Sendable {
     // MARK: - CGEventTap
 
     private func createEventTap() {
-        // We want to intercept all user hardware events:
-        let mask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.keyUp.rawValue) |
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.leftMouseUp.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseUp.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue) |
-            (1 << CGEventType.rightMouseDragged.rawValue) |
-            (1 << CGEventType.scrollWheel.rawValue) |
-            (1 << CGEventType.flagsChanged.rawValue)
+        // Build mask incrementally to avoid Swift type-checker timeout.
+        var mask: CGEventMask = 0
+        mask |= (1 << CGEventType.keyDown.rawValue)
+        mask |= (1 << CGEventType.keyUp.rawValue)
+        mask |= (1 << CGEventType.leftMouseDown.rawValue)
+        mask |= (1 << CGEventType.leftMouseUp.rawValue)
+        mask |= (1 << CGEventType.rightMouseDown.rawValue)
+        mask |= (1 << CGEventType.rightMouseUp.rawValue)
+        mask |= (1 << CGEventType.mouseMoved.rawValue)
+        mask |= (1 << CGEventType.leftMouseDragged.rawValue)
+        mask |= (1 << CGEventType.rightMouseDragged.rawValue)
+        mask |= (1 << CGEventType.scrollWheel.rawValue)
+        mask |= (1 << CGEventType.flagsChanged.rawValue)
 
-        // Store `self` as a raw pointer for the C callback
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
+        // kCGHeadInsertEventTap = 0 (Swift overlay doesn't expose the enum case name)
+        let headInsert = CGEventTapPlacement(rawValue: 0)!
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
-            place: .headInsertedEventTap,
-            options: .defaultTap,   // Active tap — can suppress events
+            place: headInsert,
+            options: .defaultTap,
             eventsOfInterest: mask,
             callback: inputGuardCallback,
             userInfo: refcon
@@ -150,17 +150,13 @@ final class InputGuard: @unchecked Sendable {
     // MARK: - Overlay Window
 
     private func showOverlay(message: String) {
-        // NSWindow must be created on a thread with a run loop.
-        // We use the main thread via DispatchQueue.main since the MCP server
-        // uses async/await which keeps the main run loop alive.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            // Ensure NSApplication is set up (no-op if already done)
+            // Ensure NSApplication is set up (no-op if already initialized)
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory) // Don't show in dock or Cmd+Tab
 
-            // Build the overlay window
             let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
             let bannerHeight: CGFloat = 44
             let bannerWidth: CGFloat = min(600, screenFrame.width * 0.5)
@@ -174,14 +170,14 @@ final class InputGuard: @unchecked Sendable {
                 backing: .buffered,
                 defer: false
             )
-            window.level = .screenSaver          // Float above everything
+            window.level = .screenSaver
             window.isOpaque = false
             window.backgroundColor = .clear
-            window.ignoresMouseEvents = true      // Click-through
+            window.ignoresMouseEvents = true
             window.hasShadow = true
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-            // Content view with rounded dark background
+            // Content view with vibrancy
             let contentView = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: bannerWidth, height: bannerHeight))
             contentView.material = .hudWindow
             contentView.state = .active
@@ -190,14 +186,13 @@ final class InputGuard: @unchecked Sendable {
             contentView.layer?.cornerRadius = 10
             contentView.layer?.masksToBounds = true
 
-            // Pulsing dot indicator
+            // Pulsing orange dot
             let dotSize: CGFloat = 10
             let dotView = NSView(frame: NSRect(x: 14, y: (bannerHeight - dotSize) / 2, width: dotSize, height: dotSize))
             dotView.wantsLayer = true
             dotView.layer?.backgroundColor = NSColor.systemOrange.cgColor
             dotView.layer?.cornerRadius = dotSize / 2
 
-            // Pulse animation
             let pulse = CABasicAnimation(keyPath: "opacity")
             pulse.fromValue = 1.0
             pulse.toValue = 0.3
@@ -206,7 +201,7 @@ final class InputGuard: @unchecked Sendable {
             pulse.repeatCount = .infinity
             dotView.layer?.add(pulse, forKey: "pulse")
 
-            // Label
+            // Text label
             let label = NSTextField(labelWithString: message)
             label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
             label.textColor = .white
@@ -230,7 +225,7 @@ final class InputGuard: @unchecked Sendable {
         }
     }
 
-    // MARK: - Handle Esc from event tap callback
+    // MARK: - Esc handling
 
     fileprivate func handleEscPressed() {
         fputs("log: InputGuard: Esc pressed — user cancelled\n", stderr)
@@ -238,7 +233,7 @@ final class InputGuard: @unchecked Sendable {
         onUserCancelled?()
     }
 
-    /// Re-enable the tap if macOS auto-disabled it (happens if callback is too slow).
+    /// Re-enable the tap if macOS auto-disabled it.
     fileprivate func reEnableTapIfNeeded(type: CGEventType) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap {
@@ -266,27 +261,22 @@ private func inputGuardCallback(
         return Unmanaged.passUnretained(event)
     }
 
-    // Let programmatic events through (events posted by our own CGEvent.post calls).
-    // Hardware events have eventSourceStateID == 0 (or privateState); our posted events
-    // come from .hidSystemState which has a non-zero ID.
-    // However, a simpler heuristic: check if the event source is .hidSystemState
-    // by looking at the event source state ID field.
+    // Let programmatic events through.
+    // Our CGEvent.post() calls use .hidSystemState source which has a non-zero stateID.
+    // Hardware events have stateID == 0.
     let sourceStateID = event.getIntegerValueField(.eventSourceStateID)
     if sourceStateID != 0 {
-        // This is a programmatic event (from our automation or another app) — let it through
         return Unmanaged.passUnretained(event)
     }
 
-    // Check for plain Esc key (no modifiers)
+    // Check for plain Esc key (keycode 53, no modifiers)
     if type == .keyDown {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
-        // Allow only plain Esc (keycode 53), no Cmd/Ctrl/Option/Shift
         let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
         if keyCode == 53 && flags.intersection(modifierMask).isEmpty {
             guard_.handleEscPressed()
-            // Suppress the Esc event itself (don't let it reach apps)
-            return nil
+            return nil // Suppress the Esc event
         }
     }
 
