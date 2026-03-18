@@ -1423,6 +1423,10 @@ func setupAndStartServer() async throws -> Server {
         fputs("log: handler(CallTool): received request for tool: \(params.name).\n", stderr)
         fputs("log: handler(CallTool): arguments received (raw MCP): \(params.arguments?.debugDescription ?? "nil")\n", stderr)
 
+        // Declared outside `do` so they're accessible in `catch InputGuardCancelled`
+        var savedFrontmostApp: NSRunningApplication? = nil
+        var savedCursorPos: CGPoint? = nil
+
         do {
             // --- Determine Action and Options from MCP Params ---
             let primaryAction: PrimaryAction
@@ -1610,8 +1614,6 @@ func setupAndStartServer() async throws -> Server {
             let isDisruptive = params.name != refreshTool.name
 
             // --- Save frontmost app + cursor before disruptive actions ---
-            var savedFrontmostApp: NSRunningApplication? = nil
-            var savedCursorPos: CGPoint? = nil
             if isDisruptive {
                 savedFrontmostApp = NSWorkspace.shared.frontmostApplication
                 let nsPos = NSEvent.mouseLocation
