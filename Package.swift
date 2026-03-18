@@ -19,7 +19,8 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "MacosUseSDK", package: "MacosUseSDK")
             ],
-            path: "Sources/MCPServer"
+            path: "Sources/MCPServer",
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),
         .executableTarget(
             name: "screenshot-helper",
