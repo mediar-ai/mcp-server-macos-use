@@ -171,79 +171,80 @@ final class InputGuard: @unchecked Sendable {
     }
 
     private func buildAndShowOverlay(message: String) {
-            // Ensure NSApplication is set up (no-op if already initialized)
-            let app = NSApplication.shared
-            app.setActivationPolicy(.accessory) // Don't show in dock or Cmd+Tab
+        // Ensure NSApplication is set up (no-op if already initialized)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory) // Don't show in dock or Cmd+Tab
 
-            let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
 
-            // Full-screen transparent overlay
-            let window = NSWindow(
-                contentRect: screenFrame,
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: false
-            )
-            window.level = .screenSaver
-            window.isOpaque = false
-            window.backgroundColor = NSColor.black.withAlphaComponent(0.15)
-            window.ignoresMouseEvents = true
-            window.hasShadow = false
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Full-screen transparent overlay
+        let window = NSWindow(
+            contentRect: screenFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.level = .screenSaver
+        window.isOpaque = false
+        window.backgroundColor = NSColor.black.withAlphaComponent(0.15)
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-            // Container for the centered pill
-            let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
+        // Container for the centered pill
+        let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
 
-            // Centered pill — solid dark background for strong contrast
-            let pillWidth: CGFloat = min(620, screenFrame.width * 0.45)
-            let pillHeight: CGFloat = 64
-            let pillX = (screenFrame.width - pillWidth) / 2
-            let pillY = (screenFrame.height - pillHeight) / 2
+        // Centered pill — solid dark background for strong contrast
+        let pillWidth: CGFloat = min(720, screenFrame.width * 0.5)
+        let pillHeight: CGFloat = 80
+        let pillX = (screenFrame.width - pillWidth) / 2
+        let pillY = (screenFrame.height - pillHeight) / 2
 
-            let pill = NSView(frame: NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight))
-            pill.wantsLayer = true
-            pill.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.92).cgColor
-            pill.layer?.cornerRadius = pillHeight / 2
-            pill.layer?.masksToBounds = true
+        let pill = NSView(frame: NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight))
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.92).cgColor
+        pill.layer?.cornerRadius = pillHeight / 2
+        pill.layer?.masksToBounds = true
 
-            // Pulsing orange dot — vertically centered
-            let dotSize: CGFloat = 14
-            let dotView = NSView(frame: NSRect(x: 22, y: (pillHeight - dotSize) / 2, width: dotSize, height: dotSize))
-            dotView.wantsLayer = true
-            dotView.layer?.backgroundColor = NSColor.systemOrange.cgColor
-            dotView.layer?.cornerRadius = dotSize / 2
+        // Pulsing orange dot — vertically centered
+        let dotSize: CGFloat = 16
+        let dotView = NSView(frame: NSRect(x: 28, y: (pillHeight - dotSize) / 2, width: dotSize, height: dotSize))
+        dotView.wantsLayer = true
+        dotView.layer?.backgroundColor = NSColor.systemOrange.cgColor
+        dotView.layer?.cornerRadius = dotSize / 2
 
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 1.0
-            pulse.toValue = 0.3
-            pulse.duration = 0.8
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            dotView.layer?.add(pulse, forKey: "pulse")
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.3
+        pulse.duration = 0.8
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        dotView.layer?.add(pulse, forKey: "pulse")
 
-            // Text label — bright white, larger font, properly centered
-            let label = NSTextField(labelWithString: message)
-            label.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
-            label.textColor = NSColor.white
-            label.alignment = .center
-            label.lineBreakMode = .byTruncatingTail
-            // Vertically + horizontally center the label inside the pill (after the dot)
-            let labelX: CGFloat = 44
-            let labelWidth = pillWidth - labelX - 22
-            label.frame = NSRect(x: labelX, y: 0, width: labelWidth, height: pillHeight)
-            // NSTextField with labelWithString has a fixed intrinsic height; use a cell to center vertically
-            label.cell?.isScrollable = false
-            label.cell?.wraps = false
+        // Text label — large white font, single line, vertically centered via intrinsic sizing
+        let font = NSFont.systemFont(ofSize: 20, weight: .semibold)
+        let label = NSTextField(labelWithString: message)
+        label.font = font
+        label.textColor = NSColor.white
+        label.alignment = .center
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        // Size to fit the text height, then center vertically in the pill
+        label.sizeToFit()
+        let labelX: CGFloat = 54
+        let labelWidth = pillWidth - labelX - 28
+        let labelHeight = label.frame.height
+        let labelY = (pillHeight - labelHeight) / 2
+        label.frame = NSRect(x: labelX, y: labelY, width: labelWidth, height: labelHeight)
 
-            pill.addSubview(dotView)
-            pill.addSubview(label)
-            contentView.addSubview(pill)
-            window.contentView = contentView
+        pill.addSubview(dotView)
+        pill.addSubview(label)
+        contentView.addSubview(pill)
+        window.contentView = contentView
 
-            window.orderFrontRegardless()
-            self.overlayWindow = window
-            fputs("log: InputGuard: overlay shown (fullscreen)\n", stderr)
-        }
+        window.orderFrontRegardless()
+        self.overlayWindow = window
+        fputs("log: InputGuard: overlay shown (fullscreen)\n", stderr)
     }
 
     private func hideOverlay() {
