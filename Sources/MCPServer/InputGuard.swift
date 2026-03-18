@@ -176,23 +176,21 @@ final class InputGuard: @unchecked Sendable {
             // Container for the centered pill
             let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
 
-            // Centered pill with vibrancy
-            let pillWidth: CGFloat = min(560, screenFrame.width * 0.4)
-            let pillHeight: CGFloat = 52
+            // Centered pill — solid dark background for strong contrast
+            let pillWidth: CGFloat = min(620, screenFrame.width * 0.45)
+            let pillHeight: CGFloat = 64
             let pillX = (screenFrame.width - pillWidth) / 2
             let pillY = (screenFrame.height - pillHeight) / 2
 
-            let pill = NSVisualEffectView(frame: NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight))
-            pill.material = .hudWindow
-            pill.state = .active
-            pill.blendingMode = .behindWindow
+            let pill = NSView(frame: NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight))
             pill.wantsLayer = true
+            pill.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.92).cgColor
             pill.layer?.cornerRadius = pillHeight / 2
             pill.layer?.masksToBounds = true
 
-            // Pulsing orange dot
-            let dotSize: CGFloat = 12
-            let dotView = NSView(frame: NSRect(x: 18, y: (pillHeight - dotSize) / 2, width: dotSize, height: dotSize))
+            // Pulsing orange dot — vertically centered
+            let dotSize: CGFloat = 14
+            let dotView = NSView(frame: NSRect(x: 22, y: (pillHeight - dotSize) / 2, width: dotSize, height: dotSize))
             dotView.wantsLayer = true
             dotView.layer?.backgroundColor = NSColor.systemOrange.cgColor
             dotView.layer?.cornerRadius = dotSize / 2
@@ -205,12 +203,19 @@ final class InputGuard: @unchecked Sendable {
             pulse.repeatCount = .infinity
             dotView.layer?.add(pulse, forKey: "pulse")
 
-            // Text label
+            // Text label — bright white, larger font, properly centered
             let label = NSTextField(labelWithString: message)
-            label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
-            label.textColor = .white
+            label.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
+            label.textColor = NSColor.white
             label.alignment = .center
-            label.frame = NSRect(x: 38, y: 0, width: pillWidth - 56, height: pillHeight)
+            label.lineBreakMode = .byTruncatingTail
+            // Vertically + horizontally center the label inside the pill (after the dot)
+            let labelX: CGFloat = 44
+            let labelWidth = pillWidth - labelX - 22
+            label.frame = NSRect(x: labelX, y: 0, width: labelWidth, height: pillHeight)
+            // NSTextField with labelWithString has a fixed intrinsic height; use a cell to center vertically
+            label.cell?.isScrollable = false
+            label.cell?.wraps = false
 
             pill.addSubview(dotView)
             pill.addSubview(label)
