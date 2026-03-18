@@ -53,7 +53,9 @@ final class InputGuard: @unchecked Sendable {
 
     /// Throws if the user cancelled via Esc. Call this between automation steps.
     func throwIfCancelled() throws {
-        if wasCancelled {
+        let cancelled = wasCancelled
+        fputs("log: InputGuard: throwIfCancelled check — wasCancelled=\(cancelled)\n", stderr)
+        if cancelled {
             throw InputGuardCancelled()
         }
     }
