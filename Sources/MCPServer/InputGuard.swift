@@ -41,6 +41,7 @@ final class InputGuard: @unchecked Sendable {
     // MARK: - Engage / Disengage
 
     /// Start blocking user input and show the overlay banner.
+    /// Blocks until the event tap is active and the overlay is shown.
     func engage(message: String = "AI is controlling your computer — press Esc to cancel") {
         lock.lock()
         guard !_engaged else { lock.unlock(); return }
@@ -49,14 +50,22 @@ final class InputGuard: @unchecked Sendable {
 
         fputs("log: InputGuard: engaging — \(message)\n", stderr)
 
-        // 1. Show overlay on main thread
-        showOverlay(message: message)
+        // Create event tap and overlay synchronously on main thread to ensure
+        // they're active before we return and the automation starts.
+        if Thread.isMainThread {
+            createEventTap()
+            showOverlaySync(message: message)
+        } else {
+            DispatchQueue.main.sync {
+                self.createEventTap()
+                self.showOverlaySync(message: message)
+            }
+        }
 
-        // 2. Create the event tap
-        createEventTap()
-
-        // 3. Start watchdog timer
+        // Start watchdog timer
         startWatchdog()
+
+        fputs("log: InputGuard: engaged — tap active, overlay visible\n", stderr)
     }
 
     /// Stop blocking user input and hide the overlay.
@@ -149,10 +158,19 @@ final class InputGuard: @unchecked Sendable {
 
     // MARK: - Overlay Window
 
+    /// Show overlay synchronously (must be called on main thread).
+    private func showOverlaySync(message: String) {
+        assert(Thread.isMainThread, "showOverlaySync must be called on main thread")
+        buildAndShowOverlay(message: message)
+    }
+
     private func showOverlay(message: String) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            self?.buildAndShowOverlay(message: message)
+        }
+    }
 
+    private func buildAndShowOverlay(message: String) {
             // Ensure NSApplication is set up (no-op if already initialized)
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory) // Don't show in dock or Cmd+Tab
