@@ -74,14 +74,14 @@ final class InputGuard: @unchecked Sendable {
 
         fputs("log: InputGuard: engaging — \(message)\n", stderr)
 
-        // Create event tap and overlay synchronously on main thread to ensure
-        // they're active before we return and the automation starts.
+        // Create event tap on its own background thread (fires even when main is blocked)
+        createEventTap()
+
+        // Show overlay synchronously on main thread
         if Thread.isMainThread {
-            createEventTap()
             showOverlaySync(message: message)
         } else {
             DispatchQueue.main.sync {
-                self.createEventTap()
                 self.showOverlaySync(message: message)
             }
         }
