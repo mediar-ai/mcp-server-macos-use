@@ -1697,9 +1697,12 @@ func setupAndStartServer() async throws -> Server {
                 actionResult = combined
             }
 
-            // --- Disengage input guard ---
+            // --- Disengage input guard and check for late cancellation ---
             if isDisruptive {
                 InputGuard.shared.disengage()
+                // Check once more — user may have pressed Esc during the last action
+                // (e.g. mid-osascript typing). The action ran but we still report cancellation.
+                try InputGuard.shared.throwIfCancelled()
             }
 
             // --- Restore cursor position ---
