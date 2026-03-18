@@ -54,7 +54,8 @@ final class InputGuard: @unchecked Sendable {
     /// Throws if the user cancelled via Esc. Call this between automation steps.
     func throwIfCancelled() throws {
         let cancelled = wasCancelled
-        fputs("log: InputGuard: throwIfCancelled check — wasCancelled=\(cancelled)\n", stderr)
+        fputs("log: InputGuard: throwIfCancelled — wasCancelled=\(cancelled)\n", stderr)
+        try? "throwIfCancelled: wasCancelled=\(cancelled) at \(Date())".write(toFile: "/tmp/macos-use/cancel_check.txt", atomically: true, encoding: .utf8)
         if cancelled {
             throw InputGuardCancelled()
         }
@@ -353,12 +354,20 @@ private func inputGuardCallback(
         return Unmanaged.passUnretained(event)
     }
 
+    // Log every hardware event for debugging
+    if type == .keyDown || type == .keyUp {
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        fputs("log: InputGuard TAP: \(type == .keyDown ? "keyDown" : "keyUp") keyCode=\(keyCode) sourceState=\(sourceStateID)\n", stderr)
+    }
+
     // Check for plain Esc key (keycode 53, no modifiers)
     if type == .keyDown {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
         let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
         if keyCode == 53 && flags.intersection(modifierMask).isEmpty {
+            // Write marker file so we can verify Esc was detected
+            try? "esc_at_\(Date())".write(toFile: "/tmp/macos-use/esc_pressed.txt", atomically: true, encoding: .utf8)
             guard_.handleEscPressed()
             return nil // Suppress the Esc event
         }
