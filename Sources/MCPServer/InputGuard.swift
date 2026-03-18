@@ -2,6 +2,11 @@ import Foundation
 import CoreGraphics
 import AppKit
 
+/// Error thrown when the user presses Esc to cancel automation.
+struct InputGuardCancelled: Error, LocalizedError {
+    var errorDescription: String? { "User pressed Esc — automation cancelled" }
+}
+
 /// Blocks user keyboard/mouse input during MCP automation and shows a floating overlay.
 /// Press Esc (plain, no modifiers) to cancel and immediately release.
 ///
@@ -24,6 +29,7 @@ final class InputGuard: @unchecked Sendable {
     private var watchdogTimer: DispatchSourceTimer?
     private let lock = NSLock()
     private var _engaged = false
+    private var _cancelled = false
 
     /// Whether the guard is currently blocking input.
     var isEngaged: Bool {
@@ -32,8 +38,23 @@ final class InputGuard: @unchecked Sendable {
         return _engaged
     }
 
+    /// Whether the user pressed Esc to cancel the current automation.
+    /// Reset to false each time `engage()` is called.
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _cancelled
+    }
+
     /// Callback invoked when the user presses Esc to cancel. Called on an arbitrary thread.
     var onUserCancelled: (() -> Void)?
+
+    /// Throws if the user cancelled via Esc. Call this between automation steps.
+    func throwIfCancelled() throws {
+        if wasCancelled {
+            throw InputGuardCancelled()
+        }
+    }
 
     // MARK: - Overlay
     private var overlayWindow: NSWindow?
@@ -46,6 +67,7 @@ final class InputGuard: @unchecked Sendable {
         lock.lock()
         guard !_engaged else { lock.unlock(); return }
         _engaged = true
+        _cancelled = false
         lock.unlock()
 
         fputs("log: InputGuard: engaging — \(message)\n", stderr)
@@ -259,6 +281,9 @@ final class InputGuard: @unchecked Sendable {
 
     fileprivate func handleEscPressed() {
         fputs("log: InputGuard: Esc pressed — user cancelled\n", stderr)
+        lock.lock()
+        _cancelled = true
+        lock.unlock()
         disengage()
         onUserCancelled?()
     }
