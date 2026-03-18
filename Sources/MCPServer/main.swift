@@ -1699,7 +1699,10 @@ func setupAndStartServer() async throws -> Server {
 
             // --- Disengage input guard and check for late cancellation ---
             if isDisruptive {
+                let wasCancelledBeforeDisengage = InputGuard.shared.wasCancelled
                 InputGuard.shared.disengage()
+                let wasCancelledAfterDisengage = InputGuard.shared.wasCancelled
+                fputs("log: handler(CallTool): InputGuard cancelled? before=\(wasCancelledBeforeDisengage) after=\(wasCancelledAfterDisengage)\n", stderr)
                 // Check once more — user may have pressed Esc during the last action
                 // (e.g. mid-osascript typing). The action ran but we still report cancellation.
                 try InputGuard.shared.throwIfCancelled()
