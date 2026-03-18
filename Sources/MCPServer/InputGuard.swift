@@ -158,37 +158,41 @@ final class InputGuard: @unchecked Sendable {
             app.setActivationPolicy(.accessory) // Don't show in dock or Cmd+Tab
 
             let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-            let bannerHeight: CGFloat = 44
-            let bannerWidth: CGFloat = min(600, screenFrame.width * 0.5)
-            let bannerX = screenFrame.origin.x + (screenFrame.width - bannerWidth) / 2
-            // Position near top of screen (NSWindow origin is bottom-left)
-            let bannerY = screenFrame.origin.y + screenFrame.height - bannerHeight - 8
 
+            // Full-screen transparent overlay
             let window = NSWindow(
-                contentRect: NSRect(x: bannerX, y: bannerY, width: bannerWidth, height: bannerHeight),
+                contentRect: screenFrame,
                 styleMask: [.borderless],
                 backing: .buffered,
                 defer: false
             )
             window.level = .screenSaver
             window.isOpaque = false
-            window.backgroundColor = .clear
+            window.backgroundColor = NSColor.black.withAlphaComponent(0.15)
             window.ignoresMouseEvents = true
-            window.hasShadow = true
+            window.hasShadow = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-            // Content view with vibrancy
-            let contentView = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: bannerWidth, height: bannerHeight))
-            contentView.material = .hudWindow
-            contentView.state = .active
-            contentView.blendingMode = .behindWindow
-            contentView.wantsLayer = true
-            contentView.layer?.cornerRadius = 10
-            contentView.layer?.masksToBounds = true
+            // Container for the centered pill
+            let contentView = NSView(frame: NSRect(origin: .zero, size: screenFrame.size))
+
+            // Centered pill with vibrancy
+            let pillWidth: CGFloat = min(560, screenFrame.width * 0.4)
+            let pillHeight: CGFloat = 52
+            let pillX = (screenFrame.width - pillWidth) / 2
+            let pillY = (screenFrame.height - pillHeight) / 2
+
+            let pill = NSVisualEffectView(frame: NSRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight))
+            pill.material = .hudWindow
+            pill.state = .active
+            pill.blendingMode = .behindWindow
+            pill.wantsLayer = true
+            pill.layer?.cornerRadius = pillHeight / 2
+            pill.layer?.masksToBounds = true
 
             // Pulsing orange dot
-            let dotSize: CGFloat = 10
-            let dotView = NSView(frame: NSRect(x: 14, y: (bannerHeight - dotSize) / 2, width: dotSize, height: dotSize))
+            let dotSize: CGFloat = 12
+            let dotView = NSView(frame: NSRect(x: 18, y: (pillHeight - dotSize) / 2, width: dotSize, height: dotSize))
             dotView.wantsLayer = true
             dotView.layer?.backgroundColor = NSColor.systemOrange.cgColor
             dotView.layer?.cornerRadius = dotSize / 2
@@ -203,17 +207,19 @@ final class InputGuard: @unchecked Sendable {
 
             // Text label
             let label = NSTextField(labelWithString: message)
-            label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
             label.textColor = .white
-            label.frame = NSRect(x: 32, y: 0, width: bannerWidth - 44, height: bannerHeight)
+            label.alignment = .center
+            label.frame = NSRect(x: 38, y: 0, width: pillWidth - 56, height: pillHeight)
 
-            contentView.addSubview(dotView)
-            contentView.addSubview(label)
+            pill.addSubview(dotView)
+            pill.addSubview(label)
+            contentView.addSubview(pill)
             window.contentView = contentView
 
             window.orderFrontRegardless()
             self.overlayWindow = window
-            fputs("log: InputGuard: overlay shown\n", stderr)
+            fputs("log: InputGuard: overlay shown (fullscreen)\n", stderr)
         }
     }
 
