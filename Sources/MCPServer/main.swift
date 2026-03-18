@@ -1650,6 +1650,7 @@ func setupAndStartServer() async throws -> Server {
                     return await performAction(action: primaryAction, optionsInput: options)
                 }.value
                 fputs("log: handler(CallTool): performAction task completed.\n", stderr)
+                if isDisruptive { try InputGuard.shared.throwIfCancelled() }
             } else {
                 // Composed multi-action path: click → type? → press? → final traversal
                 fputs("log: handler(CallTool): composed mode — \(additionalActions.count) additional action(s) after primary.\n", stderr)
@@ -1662,17 +1663,20 @@ func setupAndStartServer() async throws -> Server {
                     return await performAction(action: primaryAction, optionsInput: primaryOpts)
                 }.value
                 fputs("log: handler(CallTool): composed — primary action done.\n", stderr)
+                if isDisruptive { try InputGuard.shared.throwIfCancelled() }
 
                 // Step 2: Additional actions (type, press) — no traversal, just input
                 var minOpts = ActionOptions(showAnimation: false)
                 minOpts.pidForTraversal = options.pidForTraversal
                 for additionalAction in additionalActions {
                     try? await Task.sleep(nanoseconds: 100_000_000) // 100ms between actions
+                    if isDisruptive { try InputGuard.shared.throwIfCancelled() }
                     let _ = await Task { @MainActor in
                         return await performAction(action: .input(action: additionalAction), optionsInput: minOpts)
                     }.value
                     fputs("log: handler(CallTool): composed — additional action \(additionalAction) done.\n", stderr)
                 }
+                if isDisruptive { try InputGuard.shared.throwIfCancelled() }
 
                 // Step 3: Final traversal to capture the after state
                 var finalOpts = ActionOptions(traverseAfter: true, showAnimation: false)
@@ -1777,6 +1781,21 @@ func setupAndStartServer() async throws -> Server {
 
             return .init(content: [.text(summary)], isError: isError)
 
+        } catch is InputGuardCancelled {
+            // User pressed Esc — clean up and return cancellation error
+            fputs("log: handler(CallTool): user cancelled tool '\(params.name)' via Esc\n", stderr)
+            InputGuard.shared.disengage()
+            // Restore cursor
+            if let pos = savedCursorPos,
+               let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                       mouseCursorPosition: pos, mouseButton: .left) {
+                moveEvent.post(tap: .cghidEventTap)
+            }
+            // Restore frontmost app
+            if let prevApp = savedFrontmostApp, !prevApp.isTerminated {
+                prevApp.activate(options: [])
+            }
+            return .init(content: [.text("Cancelled: user pressed Esc to abort '\(params.name)'.")], isError: true)
         } catch let error as MCPError {
              fputs("error: handler(CallTool): MCPError occurred processing MCP params for tool '\(params.name)': \(error)\n", stderr)
              return .init(content: [.text("Error processing parameters for tool '\(params.name)': \(error.localizedDescription)")], isError: true)
