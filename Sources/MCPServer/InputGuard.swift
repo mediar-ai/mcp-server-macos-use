@@ -26,8 +26,6 @@ final class InputGuard: @unchecked Sendable {
     // MARK: - State
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var tapRunLoop: CFRunLoop?       // Dedicated run loop for the event tap
-    private var tapThread: Thread?           // Background thread hosting the tap run loop
     private var watchdogTimer: DispatchSourceTimer?
     private let lock = NSLock()
     private var _engaged = false
@@ -77,14 +75,15 @@ final class InputGuard: @unchecked Sendable {
 
         fputs("log: InputGuard: engaging — \(message)\n", stderr)
 
-        // Create event tap on its own background thread (fires even when main is blocked)
-        createEventTap()
-
-        // Show overlay synchronously on main thread
+        // Create event tap and show overlay synchronously on main thread.
+        // Swift concurrency's `await` yields the main thread between suspension points,
+        // so the main run loop can still process event tap callbacks during automation.
         if Thread.isMainThread {
+            createEventTap()
             showOverlaySync(message: message)
         } else {
             DispatchQueue.main.sync {
+                self.createEventTap()
                 self.showOverlaySync(message: message)
             }
         }
@@ -146,50 +145,25 @@ final class InputGuard: @unchecked Sendable {
         }
 
         eventTap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)!
-        runLoopSource = source
-
-        // Run the event tap on a dedicated background thread so the callback
-        // fires even when the main thread is blocked (e.g. by performAction).
-        let readySemaphore = DispatchSemaphore(value: 0)
-        let thread = Thread {
-            let rl = CFRunLoopGetCurrent()!
-            CFRunLoopAddSource(rl, source, .commonModes)
-            CGEvent.tapEnable(tap: tap, enable: true)
-            let isEnabled = CGEvent.tapIsEnabled(tap: tap)
-            fputs("log: InputGuard: tap thread started, runLoop=\(rl), tapEnabled=\(isEnabled)\n", stderr)
-            try? "tap_created: enabled=\(isEnabled) at \(Date())".write(toFile: "/tmp/macos-use/tap_status.txt", atomically: true, encoding: .utf8)
-            self.lock.lock()
-            self.tapRunLoop = rl
-            self.lock.unlock()
-            readySemaphore.signal()
-            CFRunLoopRun() // Blocks until CFRunLoopStop is called
-            fputs("log: InputGuard: tap thread run loop exited\n", stderr)
-        }
-        thread.name = "InputGuard-EventTap"
-        thread.qualityOfService = .userInteractive
-        tapThread = thread
-        thread.start()
-        readySemaphore.wait() // Block until the tap is active on the background thread
-        fputs("log: InputGuard: CGEventTap created and enabled on background thread\n", stderr)
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        // CGEventTap must be on the main run loop to receive events
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        let isEnabled = CGEvent.tapIsEnabled(tap: tap)
+        fputs("log: InputGuard: CGEventTap created on main run loop, enabled=\(isEnabled)\n", stderr)
+        try? "tap_created: enabled=\(isEnabled) at \(Date())".write(toFile: "/tmp/macos-use/tap_status.txt", atomically: true, encoding: .utf8)
     }
 
     private func destroyEventTap() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            }
             CFMachPortInvalidate(tap)
-        }
-        // Stop the background run loop
-        lock.lock()
-        let rl = tapRunLoop
-        tapRunLoop = nil
-        lock.unlock()
-        if let rl = rl {
-            CFRunLoopStop(rl)
         }
         eventTap = nil
         runLoopSource = nil
-        tapThread = nil
         fputs("log: InputGuard: CGEventTap destroyed\n", stderr)
     }
 
