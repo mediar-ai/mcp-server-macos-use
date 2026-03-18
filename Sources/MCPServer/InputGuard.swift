@@ -156,6 +156,9 @@ final class InputGuard: @unchecked Sendable {
             let rl = CFRunLoopGetCurrent()!
             CFRunLoopAddSource(rl, source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            let isEnabled = CGEvent.tapIsEnabled(tap: tap)
+            fputs("log: InputGuard: tap thread started, runLoop=\(rl), tapEnabled=\(isEnabled)\n", stderr)
+            try? "tap_created: enabled=\(isEnabled) at \(Date())".write(toFile: "/tmp/macos-use/tap_status.txt", atomically: true, encoding: .utf8)
             self.lock.lock()
             self.tapRunLoop = rl
             self.lock.unlock()
