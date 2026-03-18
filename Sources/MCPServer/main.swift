@@ -1606,15 +1606,39 @@ func setupAndStartServer() async throws -> Server {
 
             fputs("log: handler(CallTool): constructed PrimaryAction: \(primaryAction)\n", stderr)
 
-            // --- Save cursor position before click actions so we can restore it after ---
+            // --- Determine if this tool is disruptive (takes over input/focus) ---
+            let isDisruptive = params.name != refreshTool.name
+
+            // --- Save frontmost app + cursor before disruptive actions ---
+            var savedFrontmostApp: NSRunningApplication? = nil
             var savedCursorPos: CGPoint? = nil
-            if case .input(let inputAction) = primaryAction, case .click = inputAction {
+            if isDisruptive {
+                savedFrontmostApp = NSWorkspace.shared.frontmostApplication
                 let nsPos = NSEvent.mouseLocation
                 if let primaryScreen = NSScreen.screens.first {
-                    // NSEvent uses bottom-left origin; CGEvent uses top-left — flip Y
                     savedCursorPos = CGPoint(x: nsPos.x, y: primaryScreen.frame.height - nsPos.y)
-                    fputs("log: handler(CallTool): saved cursor position \(savedCursorPos!)\n", stderr)
+                    fputs("log: handler(CallTool): saved cursor \(savedCursorPos!) and frontmost app '\(savedFrontmostApp?.localizedName ?? "nil")' (PID \(savedFrontmostApp?.processIdentifier ?? 0))\n", stderr)
                 }
+
+                // Engage input guard — block user input and show overlay
+                let toolDesc: String
+                switch params.name {
+                case openAppTool.name:
+                    let id = params.arguments?["identifier"]?.stringValue ?? "app"
+                    toolDesc = "Opening \(id)…"
+                case clickTool.name:
+                    toolDesc = "Clicking in app…"
+                case typeTool.name:
+                    toolDesc = "Typing in app…"
+                case pressKeyTool.name:
+                    let key = params.arguments?["keyName"]?.stringValue ?? "key"
+                    toolDesc = "Pressing \(key)…"
+                case scrollTool.name:
+                    toolDesc = "Scrolling in app…"
+                default:
+                    toolDesc = "Automating…"
+                }
+                InputGuard.shared.engage(message: "AI: \(toolDesc) — press Esc to cancel")
             }
 
             // --- Execute the Action using MacosUseSDK ---
@@ -1667,12 +1691,26 @@ func setupAndStartServer() async throws -> Server {
                 actionResult = combined
             }
 
-            // --- Restore cursor position after click ---
+            // --- Disengage input guard ---
+            if isDisruptive {
+                InputGuard.shared.disengage()
+            }
+
+            // --- Restore cursor position ---
             if let pos = savedCursorPos,
                let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                                        mouseCursorPosition: pos, mouseButton: .left) {
                 moveEvent.post(tap: .cghidEventTap)
                 fputs("log: handler(CallTool): restored cursor to \(pos)\n", stderr)
+            }
+
+            // --- Restore frontmost app focus ---
+            if isDisruptive, let prevApp = savedFrontmostApp, prevApp.isTerminated == false {
+                let currentFrontmost = NSWorkspace.shared.frontmostApplication
+                if currentFrontmost?.processIdentifier != prevApp.processIdentifier {
+                    prevApp.activate(options: [])
+                    fputs("log: handler(CallTool): restored focus to '\(prevApp.localizedName ?? "")' (PID \(prevApp.processIdentifier))\n", stderr)
+                }
             }
 
             // --- Build simplified response and serialize to JSON ---
