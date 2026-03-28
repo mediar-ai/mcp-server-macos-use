@@ -1281,7 +1281,7 @@ func setupAndStartServer() async throws -> Server {
     ])
     let clickTool = Tool(
         name: "macos-use_click_and_traverse",
-        description: "Simulates a click at the given coordinates within the app specified by PID, then traverses its accessibility tree. Optionally types text and/or presses a key after the click — all in one tool call. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        description: "Simulates a click, then optionally types text and/or presses a key — all in ONE tool call. Prefer this over separate click → type → press sequences. Example: click a message field, type a message, and press Return to send — all in one call. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
         inputSchema: clickSchema
     )
 
@@ -1372,6 +1372,12 @@ func setupAndStartServer() async throws -> Server {
         - visible_elements: a sample of on-screen elements with coordinates.
 
         Always check the screenshot after interactions (click, type, press) to confirm the action had the intended visual effect.
+
+        CRITICAL — Minimize tool calls by chaining actions:
+        - click_and_traverse supports `text` and `pressKey` params to click, type, AND press a key — all in ONE call.
+        - Example: to type into a Slack message box and send it, use ONE click_and_traverse call with element="Message to X", text="hello", pressKey="Return" — do NOT split into separate click, type, and press calls.
+        - type_and_traverse also supports `pressKey` to type and press in ONE call.
+        - ALWAYS prefer a single combined call over multiple sequential calls.
 
         CRITICAL — Clicking elements:
         - NEVER estimate coordinates visually from screenshots. Screenshot pixel positions do NOT match screen coordinates (they differ by the window origin offset).
