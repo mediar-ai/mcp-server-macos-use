@@ -1,0 +1,191 @@
+# mcp-server-macos-use
+
+> MCP server for macOS desktop automation using native accessibility APIs
+
+## Overview
+
+mcp-server-macos-use is a Model Context Protocol (MCP) server written in Swift that gives AI assistants programmatic control over any macOS application. It uses Apple's native Accessibility APIs (AXUIElement, CGEvent) to read UI state and perform actions, rather than relying on screenshots or pixel matching. The server communicates over stdio and exposes six tools for opening apps, clicking elements, typing text, pressing keys, scrolling, and reading the accessibility tree.
+
+- Website: https://macos-use.dev
+- GitHub: https://github.com/mediar-ai/mcp-server-macos-use
+- License: BSL 1.1
+- Version: 0.1.17
+- Requires: macOS 13+, Swift 5.9+, Xcode Command Line Tools
+
+## Who It Is For
+
+AI coding assistants (Claude Code, Cursor, VS Code with Copilot) that need to interact with macOS desktop applications. Common users include developers automating GUI workflows, AI agents that need to navigate native macOS apps, and anyone building computer use capabilities on macOS.
+
+## Available MCP Tools
+
+The server exposes six tools. Every tool returns a compact text summary containing a file path to the full accessibility tree dump (.txt) and a screenshot (.png). Callers should use Grep/Read on those files to find specific elements.
+
+### 1. macos-use_open_application_and_traverse
+
+Opens or activates an application, then traverses its accessibility tree.
+
+- `identifier` (string, required): App name, bundle ID, or file path (e.g. "Safari", "com.apple.Safari", "/Applications/Safari.app")
+
+### 2. macos-use_click_and_traverse
+
+Clicks an element, optionally types text and/or presses a key, all in one call. Supports text-based element search as an alternative to coordinates.
+
+- `pid` (number, required): Process ID of the target application
+- `x`, `y` (number): Coordinates for the click (top-left of element). Required unless `element` is provided
+- `width`, `height` (number, optional): Element dimensions from traversal. When provided, click lands at center (x+w/2, y+h/2)
+- `element` (string, optional): Case-insensitive partial text match to find and click an element (e.g. "Open", "Submit"). Alternative to x/y coordinates
+- `role` (string, optional): Filter element search by accessibility role (e.g. AXButton, AXTextField, AXLink)
+- `doubleClick` (boolean, optional): Perform a double-click
+- `rightClick` (boolean, optional): Perform a right-click (context menu)
+- `text` (string, optional): Text to type after clicking. Combines click+type into one call
+- `pressKey` (string, optional): Key to press after clicking and typing (e.g. "Return", "Tab"). Combines click+type+press into one call
+- `pressKeyModifiers` (array of strings, optional): Modifier keys for pressKey (e.g. ["Command", "Shift"])
+
+### 3. macos-use_type_and_traverse
+
+Types text into the focused field of the target application.
+
+- `pid` (number, required): Process ID of the target application
+- `text` (string, required): Text to type
+- `pressKey` (string, optional): Key to press after typing (e.g. "Return")
+- `pressKeyModifiers` (array of strings, optional): Modifier keys for pressKey
+
+### 4. macos-use_press_key_and_traverse
+
+Presses a keyboard key with optional modifiers.
+
+- `pid` (number, required): Process ID of the target application
+- `keyName` (string, required): Key name (e.g. "Return", "Escape", "Tab", "up", "down", "Delete", "a", "B"). Case-insensitive for special keys
+- `modifierFlags` (array of strings, optional): Modifier keys to hold. Valid values: CapsLock, Shift, Control, Option, Command, Function, NumericPad, Help
+
+### 5. macos-use_scroll_and_traverse
+
+Scrolls at a given position within the target application.
+
+- `pid` (number, required): Process ID of the target application
+- `x`, `y` (number, required): Coordinates for the scroll location
+- `deltaY` (integer, required): Vertical scroll in lines. Negative = scroll up, positive = scroll down
+- `deltaX` (integer, optional): Horizontal scroll in lines. Negative = left, positive = right
+
+### 6. macos-use_refresh_traversal
+
+Reads the current accessibility tree without performing any action. Useful for checking UI state.
+
+- `pid` (number, required): Process ID of the application to traverse
+
+## Common Optional Parameters
+
+These can be passed to any tool to override default behavior:
+
+- `traverseBefore` (boolean): Traverse accessibility tree before the action
+- `traverseAfter` (boolean): Traverse after the action (default: true)
+- `showDiff` (boolean): Include a diff between before/after traversals
+- `onlyVisibleElements` (boolean): Limit traversal to visible elements
+- `showAnimation` (boolean): Show visual feedback animation for actions
+- `animationDuration` (number): Duration of feedback animation
+- `delayAfterAction` (number): Delay in seconds after performing the action
+
+## Technical Architecture
+
+### Core Stack
+
+- **Language:** Swift, compiled as a native macOS executable
+- **MCP SDK:** Official Swift MCP SDK (github.com/modelcontextprotocol/swift-sdk)
+- **Automation SDK:** MacosUseSDK (github.com/mediar-ai/MacosUseSDK), a Swift library wrapping Apple accessibility and event APIs
+- **Transport:** stdio (reads JSON-RPC from stdin, writes to stdout)
+
+### How It Controls macOS
+
+The server uses three macOS system APIs:
+
+1. **AXUIElement (Accessibility API):** Reads the accessibility tree of any application. Each UI element (buttons, text fields, menus, etc.) is represented as a node with role, label, position, and size. This provides structured, semantic access to the entire UI.
+
+2. **CGEvent (Core Graphics Events):** Sends synthetic mouse clicks, key presses, and scroll events. Events are posted to the system event stream, so they behave identically to real user input.
+
+3. **CGWindowListCreateImage (Window Capture):** Captures screenshots of specific windows. A separate subprocess (screenshot-helper) handles the capture to avoid a ReplayKit memory leak in the main server process.
+
+### Key Implementation Details
+
+- **Accessibility tree traversal:** After every action, the server traverses the target app's accessibility tree and returns a structured representation. Each element includes role, text, x/y coordinates, width/height, and viewport visibility.
+- **Diff mode:** For click/type/press/scroll actions, the server captures the tree before and after, then returns only what changed (added, removed, modified elements). This reduces response size significantly.
+- **Viewport detection:** Elements are tagged with `in_viewport` based on whether they fall within the window bounds. Sheet and dialog detection overrides viewport scope automatically.
+- **Cross-app handoff:** If an action causes a different app to become frontmost (e.g. clicking a link opens a browser), the server detects this and traverses the new app automatically.
+- **InputGuard:** During automation, keyboard and mouse input from the user is blocked to prevent interference. A floating overlay shows what the server is doing. Pressing Escape cancels the current action immediately. A 30-second watchdog prevents permanent lockout.
+- **Cursor restoration:** The mouse cursor position is saved before each action and restored afterward, so the user's pointer does not jump around.
+- **Response files:** Full traversal data is written to `/tmp/macos-use/` as text files to keep MCP responses compact. Each line follows the format: `[AXButton (button)] "Open" x:680 y:520 w:80 h:30 visible`
+
+## Installation
+
+### Via npm (recommended)
+
+```bash
+npm install -g mcp-server-macos-use
+```
+
+This triggers `swift build -c release` during postinstall.
+
+### From source
+
+```bash
+git clone https://github.com/mediar-ai/mcp-server-macos-use.git
+cd mcp-server-macos-use
+swift build -c release
+```
+
+### macOS Accessibility Permission
+
+The host application (Claude Desktop, Terminal, iTerm, VS Code, etc.) must have Accessibility permission granted in System Settings > Privacy & Security > Accessibility.
+
+## Client Configuration
+
+### Claude Desktop / Claude Code
+
+Add to your MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "macos-use": {
+      "command": "mcp-server-macos-use"
+    }
+  }
+}
+```
+
+Or with an explicit path to the built binary:
+
+```json
+{
+  "mcpServers": {
+    "macos-use": {
+      "command": "/path/to/mcp-server-macos-use/.build/release/mcp-server-macos-use"
+    }
+  }
+}
+```
+
+### Cursor / VS Code
+
+Same MCP configuration format. Add the server entry to your MCP settings.
+
+## Use Cases
+
+- Automating native macOS apps that have no CLI or API (Finder, System Settings, App Store)
+- GUI testing and verification (navigate to a screen, check element state)
+- Multi-app workflows (open an app, fill a form, switch to another app, verify output)
+- Browser automation through accessibility (alternative to Playwright/Selenium for simple tasks)
+- Accessibility auditing (traverse and inspect the full UI tree of any application)
+
+## Differentiators vs Screenshot-Based Approaches
+
+1. **Structured data, not pixels:** Returns the full accessibility tree with element roles, labels, and coordinates. No OCR or vision model needed to understand the UI.
+2. **Precise targeting:** Click elements by text search or exact coordinates from the accessibility tree. No guessing pixel positions from screenshots.
+3. **Diff-based responses:** After actions, returns only what changed in the UI rather than re-describing the entire screen. This is much more token-efficient.
+4. **Native event injection:** Uses CGEvent for input, which is indistinguishable from real user input at the OS level. Works with apps that reject simulated input from other methods.
+5. **macOS-specific:** Built with Swift using Apple's native frameworks. No translation layers, no Electron wrappers, no Docker containers.
+
+## Contact
+
+- Email: matt@mediar.ai
+- Discord: m13v_
+- Issues: https://github.com/mediar-ai/mcp-server-macos-use/issues
