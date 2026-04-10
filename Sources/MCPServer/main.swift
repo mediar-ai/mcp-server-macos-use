@@ -511,11 +511,20 @@ func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint
 }
 
 /// Enrich a ResponseData with in_viewport metadata for each element
-func enrichResponseData(_ response: ResponseData, windowBounds: CGRect?) -> EnrichedResponseData {
+func enrichResponseData(_ response: ResponseData, windowBounds: CGRect?, allWindowBounds: [CGRect] = []) -> EnrichedResponseData {
+    // Use all window bounds if available; fall back to single windowBounds
+    let boundsToCheck: [CGRect]
+    if !allWindowBounds.isEmpty {
+        boundsToCheck = allWindowBounds
+    } else if let bounds = windowBounds {
+        boundsToCheck = [bounds]
+    } else {
+        boundsToCheck = []
+    }
     let enrichedElements = response.elements.map { element -> EnrichedElementData in
         let inViewport: Bool?
-        if let x = element.x, let y = element.y, let bounds = windowBounds {
-            inViewport = bounds.contains(CGPoint(x: x, y: y))
+        if let x = element.x, let y = element.y, !boundsToCheck.isEmpty {
+            inViewport = isPointInAnyWindow(CGPoint(x: x, y: y), windows: boundsToCheck)
         } else {
             inViewport = nil
         }
@@ -609,6 +618,16 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
         }
     }
 
+    // Collect ALL window bounds for multi-window viewport detection.
+    // An element is "visible" if it falls within ANY window of the app.
+    var allWindowBounds = getAllWindowBoundsFromTraversal(result.traversalAfter)
+    if allWindowBounds.isEmpty {
+        allWindowBounds = getAllWindowBoundsFromTraversal(result.traversalBefore)
+    }
+    if allWindowBounds.isEmpty, let pid = result.traversalPid ?? result.openResult?.pid {
+        allWindowBounds = getAllWindowBoundsFromAPI(pid: pid)
+    }
+
     // Check for AXSheet (file dialogs, save sheets) — use sheet bounds for viewport
     var sheetDetected = false
     if let pid = result.traversalPid ?? result.openResult?.pid {
@@ -634,8 +653,8 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
             .filter { !isScrollBarNoise($0.role) }
             .map { element -> DiffElementData in
                 let inViewport: Bool?
-                if let x = element.x, let y = element.y, let bounds = windowBounds {
-                    inViewport = bounds.contains(CGPoint(x: x, y: y))
+                if let x = element.x, let y = element.y, !allWindowBounds.isEmpty {
+                    inViewport = isPointInAnyWindow(CGPoint(x: x, y: y), windows: allWindowBounds)
                 } else {
                     inViewport = nil
                 }
@@ -673,13 +692,13 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
             }
 
             let beforeVP: Bool?
-            if let x = mod.before.x, let y = mod.before.y, let bounds = windowBounds {
-                beforeVP = bounds.contains(CGPoint(x: x, y: y))
+            if let x = mod.before.x, let y = mod.before.y, !allWindowBounds.isEmpty {
+                beforeVP = isPointInAnyWindow(CGPoint(x: x, y: y), windows: allWindowBounds)
             } else { beforeVP = nil }
 
             let afterVP: Bool?
-            if let x = mod.after.x, let y = mod.after.y, let bounds = windowBounds {
-                afterVP = bounds.contains(CGPoint(x: x, y: y))
+            if let x = mod.after.x, let y = mod.after.y, !allWindowBounds.isEmpty {
+                afterVP = isPointInAnyWindow(CGPoint(x: x, y: y), windows: allWindowBounds)
             } else { afterVP = nil }
 
             let beforeText = findTextForElement(mod.before, in: result.traversalBefore)
@@ -699,7 +718,7 @@ func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
         )
     } else if let after = result.traversalAfter {
         // Full traversal for open/refresh
-        response.traversal = enrichResponseData(after, windowBounds: windowBounds)
+        response.traversal = enrichResponseData(after, windowBounds: windowBounds, allWindowBounds: allWindowBounds)
     }
 
     return response
@@ -1521,7 +1540,8 @@ func setupAndStartServer() async throws -> Server {
                         return try traverseAccessibilityTree(pid: reqPid)
                     }.value
                     let windowBounds = getWindowBoundsFromTraversal(traversal) ?? getWindowBoundsFromAPI(pid: reqPid)
-                    let enriched = enrichResponseData(traversal, windowBounds: windowBounds)
+                    let allBounds = getAllWindowBoundsFromTraversal(traversal)
+                    let enriched = enrichResponseData(traversal, windowBounds: windowBounds, allWindowBounds: allBounds)
 
                     let searchLower = elementSearch.lowercased()
                     let matches = enriched.elements.filter { elem in
