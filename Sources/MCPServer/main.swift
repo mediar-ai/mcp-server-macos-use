@@ -292,6 +292,33 @@ func getWindowBoundsFromTraversal(_ responseData: ResponseData?) -> CGRect? {
     return nil
 }
 
+/// Extract bounds for ALL windows from traversal data.
+/// Used for multi-window viewport detection (e.g. Sparkle update dialogs).
+func getAllWindowBoundsFromTraversal(_ responseData: ResponseData?) -> [CGRect] {
+    guard let response = responseData else { return [] }
+    return response.elements.compactMap { element in
+        guard element.role == "AXWindow",
+              let x = element.x, let y = element.y,
+              let w = element.width, let h = element.height else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+}
+
+/// Get bounds for ALL windows of a PID from the accessibility API
+func getAllWindowBoundsFromAPI(pid: pid_t) -> [CGRect] {
+    let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 5.0)
+    var windowsRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+          let windows = windowsRef as? [AXUIElement] else { return [] }
+    return windows.compactMap { getAXElementFrame($0) }
+}
+
+/// Check if a point falls within any of the given window bounds
+func isPointInAnyWindow(_ point: CGPoint, windows: [CGRect]) -> Bool {
+    return windows.contains { $0.contains(point) }
+}
+
 /// Find the window (element + frame) whose frame contains the given point.
 /// Searches all AXWindows of the app; falls back to AXMainWindow if none matches.
 func getWindowContainingPoint(appElement: AXUIElement, point: CGPoint) -> (element: AXUIElement, bounds: CGRect)? {
