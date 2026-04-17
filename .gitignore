@@ -8,3 +8,10 @@ DerivedData/
 .netrc
 .playwright-mcp/
 __pycache__/
+node_modules/
+.next/
+out/
+bun.lockb
+bun.lock
+*.tsbuildinfo
+.vercel/
