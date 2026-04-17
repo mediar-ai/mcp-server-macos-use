@@ -7,7 +7,11 @@
   },
   "scripts": {
     "postinstall": "xcrun swift build -c release",
-    "build": "xcrun swift build -c release"
+    "build": "xcrun swift build -c release",
+    "web:dev": "next dev",
+    "web:build": "next build",
+    "web:start": "next start",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "mcp",
@@ -33,5 +37,24 @@
   ],
   "engines": {
     "node": ">=16"
+  },
+  "dependencies": {
+    "@m13v/seo-components": "^0.9.2",
+    "@remotion/player": "^4.0.434",
+    "framer-motion": "^11.15.0",
+    "lottie-react": "^2.4.1",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.434"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.0"
   }
 }
