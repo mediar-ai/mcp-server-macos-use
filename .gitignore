@@ -12,6 +12,5 @@ node_modules/
 .next/
 out/
 bun.lockb
-bun.lock
 *.tsbuildinfo
 .vercel/
