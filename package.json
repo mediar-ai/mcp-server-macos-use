@@ -50,6 +50,9 @@
     "remotion": "^4.0.434"
   },
   "devDependencies": {
+    "@assistant-ui/react": "^0.12.25",
+    "@google/generative-ai": "^0.24.1",
+    "@supabase/supabase-js": "^2.103.2",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
