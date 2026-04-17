@@ -7,3 +7,13 @@ scripts/
 .playwright-mcp/
 CLAUDE.md
 .claude/
+src/
+public/
+.next/
+node_modules/
+next.config.ts
+next-env.d.ts
+tsconfig.json
+postcss.config.mjs
+tailwind.config.ts
+*.tsbuildinfo
