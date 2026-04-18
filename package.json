@@ -39,9 +39,9 @@
     "node": ">=16"
   },
   "dependencies": {
-    "@m13v/seo-components": "^0.13.0",
+    "@m13v/seo-components": "^0.14.0",
     "@remotion/player": "^4.0.434",
-    "@seo/components": "npm:@m13v/seo-components@^0.13.0",
+    "@seo/components": "npm:@m13v/seo-components@^0.14.0",
     "framer-motion": "^11.15.0",
     "lottie-react": "^2.4.1",
     "next": "^15.1.0",
