@@ -17,10 +17,11 @@ import {
   ComparisonTable,
   GlowCard,
   BentoGrid,
-  BeforeAfter,
+  AnimatedChecklist,
   ProofBanner,
   InlineCta,
   StickyBottomCta,
+  SequenceDiagram,
   articleSchema,
   breadcrumbListSchema,
   faqPageSchema,
@@ -28,12 +29,12 @@ import {
 
 const SLUG = "macos-use";
 const URL = `https://macos-use.dev/t/${SLUG}`;
-const DATE_PUBLISHED = "2026-04-17";
-const DATE_MODIFIED = "2026-04-17";
+const DATE_PUBLISHED = "2026-04-18";
+const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: How the Server Tags Every UI Element With in_viewport Across All of an App's Windows";
+  "macos-use: The CGEventTap Kill-Switch That Lets You Press Esc To Stop The AI Mid-Click";
 const DESCRIPTION =
-  "macos-use is a Swift MCP server that drives macOS apps through accessibility APIs. The detail nobody else documents: every element in every tool response carries an in_viewport boolean, and it is computed against AXWindows (plural), not AXMainWindow. That is why the agent can act on Sparkle update dialogs, Preferences windows, find panels, and inspector palettes without losing track of what is on screen. Walkthrough of the three helpers at main.swift:295-320 and the collection site at main.swift:623.";
+  "macos-use is a Swift MCP server that drives macOS apps through accessibility APIs. The part nobody else writes about: every disruptive tool call engages a CGEventTap that blocks your keyboard and mouse, shows a pulsing 'press Esc to cancel' overlay, and distinguishes the server's own CGEvent.post calls from your keystrokes using a single integer field. Walk through InputGuard.swift and the call sites at main.swift:1667-1764.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -47,10 +48,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title:
-      "macos-use: every element carries in_viewport, computed across all the app's windows",
+    title: "macos-use: the Esc-to-cancel kill-switch, explained from source",
     description:
-      "Inside the three Swift helpers that let the agent see a button inside a Sparkle update dialog, even when the main window is covered.",
+      "CGEventTap at head-insert, 30-second watchdog, stateID-based hardware filter. One Swift file, 355 lines.",
   },
 };
 
@@ -69,47 +69,51 @@ const breadcrumbSchemaItems = [
 const faqItems = [
   {
     q: "What is macos-use?",
-    a: "macos-use (package name mcp-server-macos-use) is an open source Swift MCP server that lets any MCP-compatible client (Claude Desktop, Claude Code, Cursor, VS Code) drive any macOS application. It reads the accessibility tree instead of taking screenshots and talks to the system through AXUIElement and CGEvent. The repository is github.com/mediar-ai/mcp-server-macos-use and the homepage is macos-use.dev. It exposes six tools: open_application_and_traverse, click_and_traverse, type_and_traverse, press_key_and_traverse, scroll_and_traverse, and refresh_traversal.",
+    a: "macos-use (package name mcp-server-macos-use) is an open source Swift MCP server that lets any MCP client (Claude Desktop, Claude Code, Cursor, VS Code) drive any macOS app. It reads the accessibility tree via AXUIElement and posts input through CGEvent, and every disruptive tool call runs behind a CGEventTap kill-switch so you can abort mid-action with Esc. Repo: github.com/mediar-ai/mcp-server-macos-use. Homepage: macos-use.dev. It exposes six tools: open_application_and_traverse, click_and_traverse, type_and_traverse, press_key_and_traverse, scroll_and_traverse, and refresh_traversal.",
   },
   {
-    q: "What is the in_viewport field on each element?",
-    a: "Every element in a macos-use response carries an optional boolean named in_viewport. It is true when the element's (x, y) falls inside at least one of the app's current windows, false when it falls outside all of them, and null when the element has no coordinates or no window bounds were available. The struct lives in Sources/MCPServer/main.swift at lines 170-178 (EnrichedElementData) and 188-196 (DiffElementData). It is what lets the agent prompt write 'only click elements with in_viewport: true'.",
+    q: "What does InputGuard actually do?",
+    a: "InputGuard is a singleton defined in Sources/MCPServer/InputGuard.swift. When a disruptive tool call starts, it creates a CGEventTap at the .cghidEventTap location with head-insert placement, registers interest in key, mouse, scroll, drag, and modifier-change events, and throws away every hardware event that reaches it. At the same time it opens an NSWindow at .screenSaver level with a dark centered pill, a pulsing orange dot, and a message describing what the AI is doing. The tap and the overlay are torn down when the tool returns.",
   },
   {
-    q: "Why compute in_viewport across all windows instead of just the main window?",
-    a: "Because real macOS apps have more than one window at a time. A Safari browser window has a Downloads popover, a Preferences window, and maybe a find bar sheet. A Mail compose window is separate from the main inbox. A Sparkle update prompt is a secondary window owned by the target app. Before the 2026-04-10 commit, the server checked each point against AXMainWindow only, so buttons inside a Sparkle dialog were marked in_viewport: false and the agent was told they were off-screen. The fix was to collect bounds for every window returned by AXWindows and treat any-window containment as visible.",
+    q: "How does it tell my keystrokes apart from the server's own CGEvent.post calls?",
+    a: "One integer. At InputGuard.swift:329 the callback reads event.getIntegerValueField(.eventSourceStateID). The server's CGEvent.post calls use the .hidSystemState source, which carries a non-zero stateID. Real hardware events carry stateID == 0. The callback returns Unmanaged.passUnretained(event) when stateID is non-zero (programmatic, let through) and returns nil when stateID is zero (hardware, dropped). That is the whole mechanism; no per-event timestamp tracking, no sequence number matching.",
   },
   {
-    q: "What are the three Swift helpers that implement this?",
-    a: "Three free functions in Sources/MCPServer/main.swift, right next to each other. getAllWindowBoundsFromTraversal(_:) at line 297 walks the already-captured accessibility tree and returns a [CGRect] for every AXWindow element in the response. getAllWindowBoundsFromAPI(pid:) at line 308 asks AXUIElementCopyAttributeValue for the app's full AXWindows list and maps through getAXElementFrame. isPointInAnyWindow(_:windows:) at line 318 is one line: return windows.contains { $0.contains(point) }. That is the entire mechanism.",
+    q: "How does Esc-to-cancel actually work?",
+    a: "The callback checks three things on every hardware keyDown: event type equals .keyDown, keycode equals 53 (plain Esc on US layout), and the event flags intersected with [.maskCommand, .maskControl, .maskAlternate, .maskShift] is empty. When all three are true it writes /tmp/macos-use/esc_pressed.txt as a verification marker, calls handleEscPressed() which flips the internal _cancelled flag and tears down the tap and the overlay, then returns nil to suppress the Esc event itself so it does not leak into whatever app has focus.",
   },
   {
-    q: "Where are those helpers actually used?",
-    a: "buildToolResponse in main.swift:612-724 calls getAllWindowBoundsFromTraversal(result.traversalAfter) at line 623, falls back to getAllWindowBoundsFromTraversal(result.traversalBefore) at line 625, and falls back again to getAllWindowBoundsFromAPI(pid:) at line 628 if neither traversal snapshot held any windows. The resulting [CGRect] is then threaded into enrichResponseData (line 514) which uses it to tag every element, and into the diff paths at lines 656, 695, and 700 so added and modified elements also get the correct in_viewport value.",
+    q: "What happens if the automation is mid-sequence when I hit Esc?",
+    a: "Between every step of a composed action (primary click → additional type → additional press → final traversal), main.swift calls try InputGuard.shared.throwIfCancelled(). If _cancelled is true, throwIfCancelled throws InputGuardCancelled and the handler drops into a catch block that disengages the guard, restores the cursor to savedCursorPos, reactivates the previously frontmost NSRunningApplication, and returns an MCP error message reading 'Cancelled: user pressed Esc to abort <tool_name>'. The abort is checked at main.swift:1708, 1721, 1728, 1734, plus a final check at 1758 after a 200ms grace period.",
   },
   {
-    q: "What happens when a sheet (like a Save dialog) is up?",
-    a: "Sheets override the window list for viewport scoping. findSheetBounds at main.swift:243 walks every AXWindow and looks for an AXSheet child. If one is found, its frame replaces windowBounds for the single-window legacy path. The all-windows path still runs, but screenshots are captured relative to the sheet. In practice this means a macos-use response for an app with a Save dialog open reports in_viewport: true for elements inside the sheet and also for elements inside the parent window, both of which are usable targets for the agent.",
+    q: "Why is there a 30-second watchdog?",
+    a: "If something goes wrong upstream and the tool handler never calls disengage(), a stuck CGEventTap would lock the user out of their own machine. watchdogTimeout defaults to 30 on InputGuard.swift:24 and is wired up in startWatchdog(): a DispatchSource timer on a global queue fires once after 30 seconds and unconditionally calls disengage(). The log line 'InputGuard: watchdog fired after 30s — auto-disengaging' shows up in stderr when it trips. The watchdog is the reason you cannot permanently brick your machine with a misbehaving agent.",
   },
   {
-    q: "How is this different from other macOS MCP servers?",
-    a: "Competing servers like mcp-remote-macos-use and CursorTouch/MacOS-MCP return element lists without any viewport metadata. The agent then has to guess whether an element is visible by comparing x, y against a window it does not have, and they often get this wrong for apps with auxiliary windows. macos-use computes in_viewport inside the server using AX-native bounds and hands the answer to the agent as a single boolean, so the prompt can filter out occluded or orphaned elements before picking a click target.",
+    q: "Is refresh_traversal disruptive?",
+    a: "No. main.swift:1667 sets `let isDisruptive = params.name != refreshTool.name`. Every other tool engages the guard and shows the overlay; refresh_traversal does not. This matches the semantics of the tool: refresh_traversal only reads the accessibility tree, it never posts a CGEvent, so there is nothing for the guard to protect against. Agents that want to plan a click without taking over the screen should use refresh_traversal first.",
   },
   {
-    q: "Does in_viewport get written into the flat .txt file too?",
-    a: "Yes. Every line in the /tmp/macos-use/<timestamp>_<tool>.txt file ends with the word 'visible' when in_viewport is true, and omits it when false or null. The format is [Role] 'text' x:N y:N w:W h:H visible. That is why the CLAUDE.md in this repo tells agents to grep for 'visible' and to trust the flat-text file when picking coordinates. The flag is also in the JSON response that MCP clients see directly.",
+    q: "What does the overlay look like?",
+    a: "A borderless NSWindow the size of the main screen, at level .screenSaver, with a 15% black wash. Centered on screen is a dark pill min(720, screenWidth/2) wide and 80 tall, with corner radius 40. Inside the pill: a 16x16 orange dot at the left that pulses 1.0 → 0.3 opacity every 0.8s (autoreverses, infinite), and a single-line white semibold 20pt system-font label that reads 'AI: <action description> — press Esc to cancel'. collectionBehavior is [.canJoinAllSpaces, .fullScreenAuxiliary] so it follows you across Spaces and sits on top of fullscreen apps. ignoresMouseEvents is true so the overlay itself is passive.",
   },
   {
-    q: "What does isPointInAnyWindow do when windows is empty?",
-    a: "It returns false, not null, because Swift's Array.contains on an empty collection is false by definition. The call sites in main.swift guard against empty by checking !allWindowBounds.isEmpty before calling, and set in_viewport: nil when the bounds list is empty. That is important because a null means 'we do not know', while false means 'we looked and the element is off-screen'. Agents should treat those two cases differently.",
+    q: "What if macOS auto-disables the tap?",
+    a: "CGEventTaps can be auto-disabled by macOS when they run too long or when the user presses Secure Input-triggering keys. The callback handles two synthetic events: .tapDisabledByTimeout and .tapDisabledByUserInput. When either arrives, reEnableTapIfNeeded calls CGEvent.tapEnable(tap: tap, enable: true) and logs 're-enabled CGEventTap after system disabled it'. The kill-switch self-heals without the tool handler needing to know.",
   },
   {
-    q: "Can I call macos-use_refresh_traversal to get in_viewport without firing an action?",
-    a: "Yes. refresh_traversal reads the accessibility tree for a given PID without posting any CGEvents. main.swift:1543 calls getAllWindowBoundsFromTraversal on the captured tree, then enrichResponseData with the resulting bounds list, so the returned elements carry in_viewport exactly as they would after a click or type. This is the recommended way for an agent to plan a click without moving the cursor first.",
+    q: "How does the guard save and restore cursor + focus?",
+    a: "Before engaging, main.swift:1671-1676 captures NSWorkspace.shared.frontmostApplication and the current NSEvent.mouseLocation (flipped to CG coordinates by subtracting from the primary screen height). After the tool returns, main.swift:1767 reposts a .mouseMoved CGEvent at savedCursorPos, and main.swift:1775-1781 compares the current frontmost PID to savedFrontmostApp.processIdentifier and calls prevApp.activate if they differ. On the Esc cancellation path the same restoration runs in the catch block at main.swift:1847-1860.",
   },
   {
-    q: "How do I verify the multi-window behavior myself?",
-    a: "Open Safari. Pull up its Preferences window (Cmd+Comma). Call macos-use_refresh_traversal on Safari's PID. In the returned elements, buttons inside the Preferences window (role AXButton with titles like 'Websites' or 'Advanced') will carry in_viewport: true even though the Preferences window is not Safari's main window. The AXWindow elements themselves appear in the response list too, so you can see the (x, y, w, h) rectangles the helper used.",
+    q: "Can I verify the Esc handler fired?",
+    a: "Yes. When the callback suppresses an Esc keypress it writes /tmp/macos-use/esc_pressed.txt with contents like 'esc_at_2026-04-18 12:34:56 +0000'. throwIfCancelled also writes /tmp/macos-use/cancel_check.txt on every call. You can tail those files while driving the agent to prove the kill-switch is live. The same directory is where flat-text tool responses and PNG screenshots land, so nothing new to set up.",
+  },
+  {
+    q: "How is this different from other macOS automation tools?",
+    a: "AppleScript has no kill-switch — once you start an osascript command, your only option is to kill the process. Automator and Shortcuts can be stopped by clicking the stop button, which requires the mouse you may not have. Competing macOS MCP servers (mcp-remote-macos-use, CursorTouch/MacOS-MCP) also post CGEvents but do not engage a hardware-event blocking tap, do not show an overlay, and do not wire up a single-key abort. macos-use is the only one where pressing Esc mid-automation raises an error inside the server and unwinds cursor + focus cleanly.",
   },
 ];
 
@@ -129,115 +133,166 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const helpersCode = `// Sources/MCPServer/main.swift:295-320
-// Three free functions. Together they are the entire viewport mechanism.
+const tapCreateCode = `// Sources/MCPServer/InputGuard.swift:113-155
+// The CGEventTap that blocks your keyboard and mouse during automation.
 
-/// Extract bounds for ALL windows from traversal data.
-/// Used for multi-window viewport detection (e.g. Sparkle update dialogs).
-func getAllWindowBoundsFromTraversal(_ responseData: ResponseData?) -> [CGRect] {
-    guard let response = responseData else { return [] }
-    return response.elements.compactMap { element in
-        guard element.role == "AXWindow",
-              let x = element.x, let y = element.y,
-              let w = element.width, let h = element.height else { return nil }
-        return CGRect(x: x, y: y, width: w, height: h)
+private func createEventTap() {
+    // Build mask incrementally to avoid Swift type-checker timeout.
+    var mask: CGEventMask = 0
+    mask |= (1 << CGEventType.keyDown.rawValue)
+    mask |= (1 << CGEventType.keyUp.rawValue)
+    mask |= (1 << CGEventType.leftMouseDown.rawValue)
+    mask |= (1 << CGEventType.leftMouseUp.rawValue)
+    mask |= (1 << CGEventType.rightMouseDown.rawValue)
+    mask |= (1 << CGEventType.rightMouseUp.rawValue)
+    mask |= (1 << CGEventType.mouseMoved.rawValue)
+    mask |= (1 << CGEventType.leftMouseDragged.rawValue)
+    mask |= (1 << CGEventType.rightMouseDragged.rawValue)
+    mask |= (1 << CGEventType.scrollWheel.rawValue)
+    mask |= (1 << CGEventType.flagsChanged.rawValue)
+
+    let refcon = Unmanaged.passUnretained(self).toOpaque()
+
+    // kCGHeadInsertEventTap = 0: first in the system event chain, before any app.
+    let headInsert = CGEventTapPlacement(rawValue: 0)!
+    guard let tap = CGEvent.tapCreate(
+        tap: .cghidEventTap,          // HID stream, pre-delivery
+        place: headInsert,
+        options: .defaultTap,          // active: we can modify / drop events
+        eventsOfInterest: mask,
+        callback: inputGuardCallback,
+        userInfo: refcon
+    ) else {
+        fputs("error: InputGuard: failed to create CGEventTap (check Accessibility permissions)\\n", stderr)
+        // … mark not engaged and bail out …
+        return
     }
-}
 
-/// Get bounds for ALL windows of a PID from the accessibility API
-func getAllWindowBoundsFromAPI(pid: pid_t) -> [CGRect] {
-    let appElement = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(appElement, 5.0)
-    var windowsRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
-          let windows = windowsRef as? [AXUIElement] else { return [] }
-    return windows.compactMap { getAXElementFrame($0) }
-}
-
-/// Check if a point falls within any of the given window bounds
-func isPointInAnyWindow(_ point: CGPoint, windows: [CGRect]) -> Bool {
-    return windows.contains { $0.contains(point) }
+    eventTap = tap
+    runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
 }`;
 
-const enrichCode = `// Sources/MCPServer/main.swift:513-540
-// Where in_viewport actually gets attached to each element.
+const callbackCode = `// Sources/MCPServer/InputGuard.swift:311-355
+// The whole filter. Three branches. Under 45 lines.
 
-func enrichResponseData(
-    _ response: ResponseData,
-    windowBounds: CGRect?,
-    allWindowBounds: [CGRect] = []
-) -> EnrichedResponseData {
-    // Prefer the all-windows list. Fall back to the single-window rect
-    // for the legacy path. Fall back to empty if we truly have nothing.
-    let boundsToCheck: [CGRect]
-    if !allWindowBounds.isEmpty {
-        boundsToCheck = allWindowBounds
-    } else if let bounds = windowBounds {
-        boundsToCheck = [bounds]
-    } else {
-        boundsToCheck = []
+private func inputGuardCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
+    let guard_ = Unmanaged<InputGuard>.fromOpaque(refcon).takeUnretainedValue()
+
+    // Branch 1: macOS auto-disabled the tap — re-enable and pass through.
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        guard_.reEnableTapIfNeeded(type: type)
+        return Unmanaged.passUnretained(event)
     }
 
-    let enrichedElements = response.elements.map { element -> EnrichedElementData in
-        let inViewport: Bool?
-        if let x = element.x, let y = element.y, !boundsToCheck.isEmpty {
-            inViewport = isPointInAnyWindow(CGPoint(x: x, y: y), windows: boundsToCheck)
-        } else {
-            inViewport = nil
+    // Branch 2: programmatic events from our own CGEvent.post calls pass through.
+    // .hidSystemState source has a non-zero stateID; hardware events have stateID == 0.
+    let sourceStateID = event.getIntegerValueField(.eventSourceStateID)
+    if sourceStateID != 0 {
+        return Unmanaged.passUnretained(event)
+    }
+
+    // Branch 3: hardware event. Check for the abort key before dropping it.
+    if type == .keyDown {
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+        let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+        if keyCode == 53 && flags.intersection(modifierMask).isEmpty {
+            // Plain Esc, no modifiers. Abort.
+            try? "esc_at_\\(Date())".write(toFile: "/tmp/macos-use/esc_pressed.txt",
+                                          atomically: true, encoding: .utf8)
+            guard_.handleEscPressed()
+            return nil  // Swallow the Esc so it does not hit the focused app.
         }
-        return EnrichedElementData(
-            role: element.role,
-            text: element.text,
-            x: element.x, y: element.y,
-            width: element.width, height: element.height,
-            in_viewport: inViewport
-        )
     }
-    // ... returns EnrichedResponseData wrapping enrichedElements
+
+    // Every other hardware event is dropped on the floor.
+    return nil
 }`;
 
-const collectCode = `// Sources/MCPServer/main.swift:612-629
-// Collected before every response. Three-step fallback.
+const callSiteCode = `// Sources/MCPServer/main.swift:1666-1763
+// How the handler engages, polls, and disengages the guard around every tool call.
 
-func buildToolResponse(_ result: ActionResult, hasDiff: Bool) -> ToolResponse {
-    // ... legacy single-window bounds collection at 613-619 ...
+// Disruptive = anything except refresh_traversal.
+let isDisruptive = params.name != refreshTool.name
 
-    // Collect ALL window bounds for multi-window viewport detection.
-    // An element is "visible" if it falls within ANY window of the app.
-    var allWindowBounds = getAllWindowBoundsFromTraversal(result.traversalAfter)
-    if allWindowBounds.isEmpty {
-        allWindowBounds = getAllWindowBoundsFromTraversal(result.traversalBefore)
-    }
-    if allWindowBounds.isEmpty,
-       let pid = result.traversalPid ?? result.openResult?.pid {
-        allWindowBounds = getAllWindowBoundsFromAPI(pid: pid)
+if isDisruptive {
+    // Snapshot what we need to restore on the way out.
+    savedFrontmostApp = NSWorkspace.shared.frontmostApplication
+    let nsPos = NSEvent.mouseLocation
+    if let primaryScreen = NSScreen.screens.first {
+        savedCursorPos = CGPoint(x: nsPos.x,
+                                 y: primaryScreen.frame.height - nsPos.y)
     }
 
-    // ... sheet detection at 632-638 ...
-    // ... response built with both windowBounds and allWindowBounds ...
-}`;
-
-const elementStructCode = `// Sources/MCPServer/main.swift:170-196
-// The struct every MCP response is built from.
-
-struct EnrichedElementData: Codable {
-    var role: String
-    var text: String?
-    var x: Double?
-    var y: Double?
-    var width: Double?
-    var height: Double?
-    var in_viewport: Bool?   // true / false / nil
+    // Engage: block input + show overlay.
+    InputGuard.shared.engage(
+        message: "AI: \\(toolDesc) — press Esc to cancel"
+    )
 }
 
-struct DiffElementData: Codable {
-    var role: String
-    var text: String?
-    var in_viewport: Bool?   // also tagged on diff elements
-    var x: Double?
-    var y: Double?
-    var width: Double?
-    var height: Double?
+// … perform primary action on @MainActor …
+if isDisruptive { try InputGuard.shared.throwIfCancelled() }
+
+// For composed actions (click → type → press → final traversal),
+// throwIfCancelled is called *between every step* so a late Esc still aborts.
+for additionalAction in additionalActions {
+    try? await Task.sleep(nanoseconds: 100_000_000)   // 100ms spacing
+    if isDisruptive { try InputGuard.shared.throwIfCancelled() }
+    // … perform additional action …
+}
+
+if isDisruptive {
+    // 200ms grace window: user might press Esc right as the action finishes.
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    let wasCancelled = InputGuard.shared.wasCancelled
+    InputGuard.shared.disengage()
+    if wasCancelled { throw InputGuardCancelled() }
+}`;
+
+const overlayCode = `// Sources/MCPServer/InputGuard.swift:202-277
+// The visible half of the kill-switch.
+
+private func buildAndShowOverlay(message: String) {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory) // No dock icon, no Cmd+Tab entry.
+
+    let screenFrame = NSScreen.main?.frame
+        ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+
+    let window = NSWindow(
+        contentRect: screenFrame,
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.level = .screenSaver            // above fullscreen apps
+    window.isOpaque = false
+    window.backgroundColor = NSColor.black.withAlphaComponent(0.15)
+    window.ignoresMouseEvents = true       // overlay is passive
+    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+    // Centered dark pill, min(720, half-screen) wide, 80pt tall, radius 40.
+    let pill = /* … NSView with layer.backgroundColor = rgba(0.08, 0.92) … */
+
+    // Pulsing orange dot, 16x16, 0.8s opacity 1.0 ↔ 0.3, autoreverses forever.
+    let pulse = CABasicAnimation(keyPath: "opacity")
+    pulse.fromValue = 1.0
+    pulse.toValue = 0.3
+    pulse.duration = 0.8
+    pulse.autoreverses = true
+    pulse.repeatCount = .infinity
+
+    // White 20pt semibold label on the right of the pill, single-line, truncates.
+    window.orderFrontRegardless()
+    self.overlayWindow = window
 }`;
 
 export default function MacosUsePage() {
@@ -261,42 +316,39 @@ export default function MacosUsePage() {
                 v0.1.17
               </span>
               <span className="inline-block bg-orange-50 text-orange-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                in_viewport: Bool?
+                CGEventTap + Esc
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              macos-use: How Every Element Gets an{" "}
-              <GradientText>in_viewport Flag</GradientText> Across All of an
-              App's Windows
+              macos-use: The{" "}
+              <GradientText>Esc-to-Cancel Kill-Switch</GradientText> That Sits
+              Between You and Every Tool Call
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Search results for &ldquo;macos use&rdquo; tell you which tools it
-              ships and that it reads the accessibility tree. None of them tell
-              you what the server actually hands back: every element in every
-              response carries a boolean called{" "}
-              <span className="font-mono text-sm">in_viewport</span>, and as of
-              April 2026 it is computed against the full{" "}
-              <span className="font-mono text-sm">AXWindows</span> list, not{" "}
-              <span className="font-mono text-sm">AXMainWindow</span>. That is
-              why the agent can act on a button inside a Sparkle update dialog,
-              a Preferences pane, or a find bar sheet without thinking those
-              elements are off-screen. This is a source-level walkthrough of
-              the three helpers and the collection site that make that work.
+              Search &ldquo;macos-use&rdquo; and every result tells you the
+              same three things: it uses accessibility APIs, it exposes six MCP
+              tools, and you install it from npm. None of them mention that
+              before any of those six tools moves your mouse or presses a key,
+              the server installs a{" "}
+              <span className="font-mono text-sm">CGEventTap</span> at
+              head-insert, covers the screen with a pulsing overlay, and listens
+              for a single keycode that unwinds the whole automation cleanly.
+              This page walks the kill-switch from the callback up.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
               author="macos-use maintainers"
-              readingTime="10 min read"
+              readingTime="11 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use">
-                Read main.swift on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift">
+                Read InputGuard.swift on GitHub
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L295-L320"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1666-L1764"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Jump to lines 295-320
+                Jump to main.swift:1666-1764
               </a>
             </div>
           </div>
@@ -307,63 +359,64 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Native AXUIElement + CGEvent",
-            "in_viewport tag on every element",
-            "Multi-window aware since 2026-04-10",
+            "CGEventTap at head-insert",
+            "stateID check separates hardware from posts",
+            "30-second watchdog auto-release",
           ]}
         />
 
         {/* Concept intro — Remotion clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="macos-use, below the tool list"
-            subtitle="The viewport flag nobody else ships"
+            title="Press Esc. The AI stops."
+            subtitle="The part of macos-use nobody writes about"
             captions={[
-              "Every element in every response carries in_viewport: Bool?",
-              "true if (x, y) falls inside any AXWindow of the app",
-              "Helpers: getAllWindowBoundsFromTraversal, getAllWindowBoundsFromAPI, isPointInAnyWindow",
-              "Sparkle dialogs, Preferences, find bars, all score in_viewport: true",
-              "null means 'we do not know', false means 'we looked and it is off-screen'",
+              "Every disruptive tool call engages a CGEventTap at head-insert",
+              "Hardware events: dropped. Server's CGEvent.post: passes through",
+              "The difference is one integer: eventSourceStateID",
+              "Keycode 53 with no modifiers tears the tap down and aborts the action",
+              "A 30-second watchdog makes sure you never stay locked out",
             ]}
             accent="teal"
           />
         </section>
 
-        {/* What competitors skip */}
+        {/* What competitor pages skip */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Other macos-use Writeups Skip
+            What Other macos-use Writeups Miss
           </h2>
           <p className="text-zinc-600 mb-4">
-            Search &ldquo;macos use&rdquo; and you will find the GitHub README,
-            the mcp.so listing, two competing MCP servers, and a handful of
-            third-party blog posts. They all cover the same three points:
-            macos-use uses accessibility APIs instead of screenshots, it
-            exposes six MCP tools, and you install it with npm.
+            The first page of Google for &ldquo;macos use&rdquo; is made up of
+            the GitHub README, the mcp.so listing, two competing macOS MCP
+            servers, and a few third-party roundups. They all agree on the same
+            three bullet points: it drives macOS apps, it reads the
+            accessibility tree instead of taking screenshots, and you wire it
+            into your MCP client with one JSON config block.
           </p>
           <p className="text-zinc-600 mb-4">
-            None of them document the shape of a response. Specifically, none
-            of them mention that every element in every response carries a
-            boolean named{" "}
-            <span className="font-mono text-sm text-teal-700">in_viewport</span>
-            , that the flag was originally computed against a single window
-            rect, and that on 2026-04-10 it was switched to check against the
-            full <span className="font-mono text-sm">AXWindows</span> list so
-            elements inside secondary windows (Sparkle update dialogs, inspector
-            palettes, Preferences windows) get the correct value.
+            None of them mention that macos-use ships a safety layer. Before
+            any tool call that posts a{" "}
+            <span className="font-mono text-sm">CGEvent</span>, the server
+            creates a{" "}
+            <span className="font-mono text-sm">CGEventTap</span> that blocks
+            every hardware event the machine produces, draws a full-screen
+            overlay with a pulsing orange dot, and watches for a single key.
+            When you press it, the tap tears down, the tool throws{" "}
+            <span className="font-mono text-sm">InputGuardCancelled</span>, and
+            the handler restores cursor position and window focus before
+            returning an MCP error.
           </p>
           <p className="text-zinc-600">
-            Every fact on this page comes from two commits in this repo:{" "}
-            <span className="font-mono text-sm text-teal-700">416674a</span>{" "}
-            (Add helpers for multi-window bounds extraction and point
-            intersection) and{" "}
-            <span className="font-mono text-sm text-teal-700">8b9987d</span>{" "}
-            (Update viewport detection to support multiple windows). They land
-            in{" "}
+            Every fact below comes from two files in this repo:{" "}
             <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/main.swift
+              Sources/MCPServer/InputGuard.swift
             </span>{" "}
-            between lines 295 and 724.
+            (355 lines) and the handler call sites at{" "}
+            <span className="font-mono text-sm text-teal-700">
+              Sources/MCPServer/main.swift:1666-1864
+            </span>
+            .
           </p>
         </section>
 
@@ -374,222 +427,310 @@ export default function MacosUsePage() {
               Anchor fact
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The Struct Your Agent Actually Parses
+              The One Integer That Separates Your Keystrokes From The AI&rsquo;s
             </h2>
-            <p className="text-zinc-600 mb-4">
-              When a macos-use tool returns, the MCP client sees a JSON shape
-              backed by the{" "}
-              <span className="font-mono text-sm">EnrichedElementData</span>{" "}
-              struct. The interesting field is at the bottom: an optional
-              boolean called <span className="font-mono text-sm">in_viewport</span>
-              . Same field exists on{" "}
-              <span className="font-mono text-sm">DiffElementData</span>, which
-              is what click, type, and press responses use.
+            <p className="text-zinc-600 mb-6">
+              At{" "}
+              <span className="font-mono text-sm">InputGuard.swift:329</span>,
+              the event-tap callback reads a field called{" "}
+              <span className="font-mono text-sm">eventSourceStateID</span> from
+              every CGEvent it sees. Events whose stateID is not zero came from
+              the server&rsquo;s own{" "}
+              <span className="font-mono text-sm">CGEvent.post</span> calls
+              (which use the{" "}
+              <span className="font-mono text-sm">.hidSystemState</span> source,
+              so they carry a non-zero stateID). Events with stateID == 0 came
+              from a physical keyboard, mouse, or trackpad. The callback
+              returns them down two different paths: non-zero passes through
+              with{" "}
+              <span className="font-mono text-sm">
+                Unmanaged.passUnretained(event)
+              </span>
+              , zero returns{" "}
+              <span className="font-mono text-sm">nil</span> and is dropped on
+              the floor.
             </p>
             <AnimatedCodeBlock
-              code={elementStructCode}
+              code={callbackCode}
               language="swift"
-              filename="Sources/MCPServer/main.swift"
+              filename="Sources/MCPServer/InputGuard.swift"
             />
             <p className="text-zinc-600 mt-6">
-              The tri-state design matters. An{" "}
-              <span className="font-mono text-sm">in_viewport: nil</span> means
-              we could not check (no coordinates on the element, or no window
-              bounds available for the app).{" "}
-              <span className="font-mono text-sm">false</span> means we did
-              check and the element lies outside every window of the app. An
-              agent prompt that says &ldquo;only click{" "}
-              <span className="font-mono text-sm">in_viewport: true</span>{" "}
-              elements&rdquo; will skip the null case too, which is the safe
-              default.
+              That one integer is why the AI can type full sentences into a
+              text field at full speed while your keyboard is completely frozen
+              behind the overlay. No per-event timestamp tracking, no sequence
+              numbers, no shared mutable state. Post events have a signature
+              the tap recognises.
             </p>
           </div>
         </section>
 
-        {/* The three helpers */}
+        {/* Animated beam: tool call → guard engage → dispatch */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Three Helpers at main.swift:295-320
-          </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            These three functions live next to each other in{" "}
-            <span className="font-mono text-sm">Sources/MCPServer/main.swift</span>
-            . Together they are fewer than thirty lines of Swift. Read them and
-            you have read the entire viewport mechanism.
-          </p>
-          <AnimatedCodeBlock
-            code={helpersCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
-          />
-          <p className="text-zinc-500 text-sm mt-4">
-            The <span className="font-mono">getAxElementFrame</span> helper
-            called on line 11 lives earlier in the same file and uses{" "}
-            <span className="font-mono">AXPosition</span> +{" "}
-            <span className="font-mono">AXSize</span> to construct the rect.
-            Same machinery as <span className="font-mono">getWindowBoundsFromAPI</span>
-            , applied per window.
-          </p>
-        </section>
-
-        {/* Animated beam: dispatch through the three helpers */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Where the Bounds Come From, Step by Step
+            What Happens Between MCP Call and CGEvent.post
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            Every tool response runs the same three-step fallback before it
-            tags elements. Traversal first (no extra AX calls), API second
-            (reach for the live window list), empty fallback last (rare but
-            possible for apps without windows).
+            A click, type, press, scroll, or open tool arrives on stdio. Before
+            any actual input reaches the system, the handler pipes through the
+            guard. Refresh traversal is the only tool that skips this path,
+            because it never posts an event.
           </p>
           <AnimatedBeam
-            title="Window-bounds collection in buildToolResponse"
+            title="How a disruptive tool call engages InputGuard"
             from={[
-              { label: "traversalAfter AXWindows" },
-              { label: "traversalBefore AXWindows" },
-              { label: "AXUIElement live AXWindows" },
+              { label: "click_and_traverse" },
+              { label: "type_and_traverse" },
+              { label: "press_key_and_traverse" },
+              { label: "scroll_and_traverse" },
+              { label: "open_application_and_traverse" },
             ]}
-            hub={{ label: "allWindowBounds: [CGRect]" }}
+            hub={{ label: "InputGuard.shared.engage()" }}
             to={[
-              { label: "enrichResponseData (open/refresh)" },
-              { label: "Diff added elements" },
-              { label: "Diff modified elements" },
+              { label: "CGEventTap at head-insert" },
+              { label: "Full-screen NSWindow overlay" },
+              { label: "30s watchdog timer" },
             ]}
           />
           <p className="text-zinc-500 text-sm mt-6 max-w-2xl">
-            The hub is populated once per response at main.swift:623-628. The
-            three consumers all call{" "}
-            <span className="font-mono">isPointInAnyWindow</span> with the same
-            list, which is why viewport tagging is consistent across the full
-            traversal and the diff.
+            <span className="font-mono">refresh_traversal</span> is treated as
+            non-disruptive at{" "}
+            <span className="font-mono">main.swift:1667</span> and bypasses
+            this whole chain, because it only reads the AX tree and never posts
+            a CGEvent.
           </p>
         </section>
 
-        {/* BentoGrid: what the multi-window fix unlocks */}
+        {/* The callback: 3 branches, one file */}
         <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            The Kinds of Windows This Unlocks
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Event-Tap Callback: Three Branches, Thirty Lines
           </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Before commit 8b9987d, any element outside the main window scored{" "}
-            <span className="font-mono text-sm">in_viewport: false</span>. That
-            left the agent blind to most of the interesting surfaces on a Mac.
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            The entire filter lives in a single C-compatible free function at{" "}
+            <span className="font-mono text-sm">
+              Sources/MCPServer/InputGuard.swift:311-355
+            </span>
+            . It has to be a free function because{" "}
+            <span className="font-mono text-sm">CGEvent.tapCreate</span> takes
+            a C callback pointer. Swift closures with captured state would not
+            bridge, so the guard instance is passed through the{" "}
+            <span className="font-mono text-sm">refcon</span> pointer and
+            unwrapped at the top of the callback.
           </p>
-          <BentoGrid
-            cards={[
+
+          <AnimatedChecklist
+            title="What the callback returns, per branch"
+            items={[
               {
-                title: "Sparkle update dialogs",
-                description:
-                  "The 'A new version is available' window shown by Sparkle-based apps is a separate AXWindow owned by the app. Before the fix, its Install button was tagged in_viewport: false and the agent would not click it.",
-                size: "2x1",
+                text: "tapDisabledByTimeout / tapDisabledByUserInput: re-enable the tap, pass the event through. The tap self-heals if macOS disables it.",
+                checked: true,
               },
               {
-                title: "Preferences windows",
-                description:
-                  "Cmd+Comma opens a second window. Its tabs and form controls now score in_viewport: true, so the agent can walk settings screens.",
-                size: "1x1",
+                text: "eventSourceStateID != 0: the server's own post. Pass through unchanged so click/type actually land.",
+                checked: true,
               },
               {
-                title: "Find bars and inspectors",
-                description:
-                  "Safari's find bar, Xcode's inspector, Keynote's inspector palette: all secondary AXWindow children of the app process.",
-                size: "1x1",
+                text: "Hardware keyDown with keycode 53 and empty modifier mask: plain Esc. Write marker file, flip _cancelled, tear down tap, swallow the event.",
+                checked: true,
               },
               {
-                title: "Compose windows",
-                description:
-                  "Mail's compose, Messages' new-message sheet, Notes' pop-out: each is a distinct AXWindow whose elements need the correct viewport flag.",
-                size: "1x1",
-              },
-              {
-                title: "Modal sheets",
-                description:
-                  "Save, Open, and custom confirm sheets. findSheetBounds at main.swift:243 still scopes windowBounds to the sheet rect, but all-windows detection keeps the parent visible too.",
-                size: "1x1",
+                text: "Every other hardware event (keys, mouse, scroll, drag, flagsChanged): return nil. The event never reaches any app.",
+                checked: true,
               },
             ]}
           />
         </section>
 
-        {/* Enrich + collect code */}
+        {/* BentoGrid: what the guard protects */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              How allWindowBounds Gets Threaded Through
+            <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+              The Concrete Failure Modes This Prevents
             </h2>
-            <p className="text-zinc-600 mb-6 max-w-2xl">
-              The list of rects is collected once inside{" "}
-              <span className="font-mono text-sm">buildToolResponse</span>, then
-              passed into{" "}
-              <span className="font-mono text-sm">enrichResponseData</span>{" "}
-              (full-traversal path) and inlined into the diff paths at
-              main.swift:656, 695, and 700. Same list, three consumers,
-              consistent answer.
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              The kill-switch is not decorative. Each of these failure modes
+              used to be trivial to reproduce with any accessibility-driven
+              automation; the guard closes them.
             </p>
-
-            <AnimatedCodeBlock
-              code={collectCode}
-              language="swift"
-              filename="Sources/MCPServer/main.swift"
+            <BentoGrid
+              cards={[
+                {
+                  title: "Your keystrokes colliding with the agent",
+                  description:
+                    "Without the tap, typing at the same moment the agent is typing would interleave characters into whatever app has focus. The stateID filter lets the agent's events through and drops yours, so the target field gets a clean sequence from the AI alone.",
+                  size: "2x1",
+                },
+                {
+                  title: "Mouse nudging mid-click",
+                  description:
+                    "mouseMoved, leftMouseDragged, and rightMouseDragged are all in the event mask. A bumped trackpad during a click_and_traverse call cannot shift the cursor off-target.",
+                  size: "1x1",
+                },
+                {
+                  title: "Scroll wheel wobble",
+                  description:
+                    "scrollWheel is masked. Scrolling while the agent is scrolling cannot turn a one-step pan into a ten-step leap.",
+                  size: "1x1",
+                },
+                {
+                  title: "Accidental modifier-change",
+                  description:
+                    "flagsChanged is in the mask. Holding Shift mid-type cannot suddenly uppercase the AI's output.",
+                  size: "1x1",
+                },
+                {
+                  title: "No off-ramp",
+                  description:
+                    "Other macOS automation paths (AppleScript, Shortcuts) give you no mid-flight abort. Here, a single Esc returns control and the handler restores cursor + focus before the MCP error returns.",
+                  size: "1x1",
+                },
+              ]}
             />
-
-            <div className="mt-10">
-              <AnimatedCodeBlock
-                code={enrichCode}
-                language="swift"
-                filename="Sources/MCPServer/main.swift"
-              />
-            </div>
           </div>
         </section>
 
-        {/* Lifecycle of an element getting tagged */}
+        {/* The call site in main.swift */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Life of a Single Element
+            Where The Guard Gets Engaged, Polled, And Released
+          </h2>
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            The handler is one big switch that constructs an{" "}
+            <span className="font-mono text-sm">ActionResult</span> per tool.
+            Everything around{" "}
+            <span className="font-mono text-sm">performAction</span> is where
+            the guard lives: snapshot cursor + focus, engage, call{" "}
+            <span className="font-mono text-sm">throwIfCancelled</span> between
+            steps, disengage, restore. Note that the cancel check is called{" "}
+            <em>four times</em> in the composed-action path alone, because a
+            user can press Esc at any point.
+          </p>
+          <AnimatedCodeBlock
+            code={callSiteCode}
+            language="swift"
+            filename="Sources/MCPServer/main.swift"
+          />
+          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
+            The 200ms grace window at{" "}
+            <span className="font-mono">main.swift:1757</span> exists because
+            the action frequently finishes faster than a human can finish a key
+            press; without the grace, a late Esc would be lost.
+          </p>
+        </section>
+
+        {/* Sequence diagram: the life of one click, from tool call to restoration */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Life Of One{" "}
+            <span className="font-mono text-2xl">click_and_traverse</span>
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            An agent sends a click tool call over stdio. This is every line of
+            ownership the cursor crosses between the MCP handler accepting the
+            call and your cursor being put back where it was.
+          </p>
+          <SequenceDiagram
+            title="click_and_traverse, start to finish, with guard engaged"
+            actors={[
+              "MCP client",
+              "CallTool handler",
+              "InputGuard",
+              "CGEventTap",
+              "MacosUseSDK",
+            ]}
+            messages={[
+              { from: 0, to: 1, label: "click_and_traverse(element, pid)", type: "request" },
+              { from: 1, to: 1, label: "save cursor + frontmost app" },
+              { from: 1, to: 2, label: "engage(message: 'AI: Clicking in app…')", type: "request" },
+              { from: 2, to: 3, label: "CGEvent.tapCreate + enable", type: "request" },
+              { from: 2, to: 2, label: "show NSWindow overlay" },
+              { from: 1, to: 4, label: "performAction(.click …)", type: "request" },
+              { from: 4, to: 3, label: "CGEvent.post (stateID != 0) passes through", type: "event" },
+              { from: 1, to: 2, label: "throwIfCancelled() no throw", type: "request" },
+              { from: 1, to: 2, label: "disengage()", type: "request" },
+              { from: 2, to: 3, label: "destroy tap + hide overlay", type: "response" },
+              { from: 1, to: 1, label: "restore cursor + focus" },
+              { from: 1, to: 0, label: "return enriched traversal + diff", type: "response" },
+            ]}
+          />
+        </section>
+
+        {/* Overlay code */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              The Overlay You See On Screen
+            </h2>
+            <p className="text-zinc-600 mb-6 max-w-2xl">
+              The kill-switch has two halves. The CGEventTap is the mechanical
+              half; the overlay is the contract with the user. Without the
+              overlay, you would not know your input was being blocked or that
+              Esc was bound. It is a single borderless NSWindow at{" "}
+              <span className="font-mono text-sm">.screenSaver</span> level
+              with a dark pill, a CABasicAnimation pulse on the dot, and one
+              label.
+            </p>
+
+            <AnimatedCodeBlock
+              code={overlayCode}
+              language="swift"
+              filename="Sources/MCPServer/InputGuard.swift"
+            />
+
+            <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
+              <span className="font-mono">ignoresMouseEvents = true</span>{" "}
+              matters a lot: if the overlay swallowed mouse events, the server
+              could not post its own clicks through to the app behind it. The
+              overlay is passive; the tap does all the blocking.
+            </p>
+          </div>
+        </section>
+
+        {/* StepTimeline: Esc flow */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            What Pressing Esc Actually Runs, In Order
           </h2>
           <p className="text-zinc-600 mb-10 max-w-2xl">
-            A user says &ldquo;click Install in the update dialog.&rdquo; The
-            agent calls{" "}
-            <span className="font-mono text-sm">
-              macos-use_click_and_traverse
-            </span>{" "}
-            on the Sparkle dialog's Install button. This is what happens to
-            that one element on its way back to the MCP client.
+            The user presses Escape mid-click. Six things happen, in this
+            order, before the MCP client sees the cancellation error. Every
+            step is a real line in{" "}
+            <span className="font-mono text-sm">InputGuard.swift</span> or{" "}
+            <span className="font-mono text-sm">main.swift</span>.
           </p>
 
           <StepTimeline
             steps={[
               {
-                title: "Traversal captures the AXWindow list",
+                title: "The HID stream delivers the keyDown to the tap",
                 description:
-                  "traverseAccessibilityTree walks the app's AX tree. Every AXWindow it finds gets its own entry in the elements array with role='AXWindow' and x/y/w/h set. The Sparkle dialog is one of those entries.",
+                  "The CGEventTap was installed at head-insert, so it sees the Esc keyDown before any app does. The callback runs synchronously on the main run loop.",
               },
               {
-                title: "buildToolResponse collects bounds",
+                title: "Three checks: event type, keycode, modifier mask",
                 description:
-                  "At main.swift:623, getAllWindowBoundsFromTraversal(traversalAfter) filters the elements array down to AXWindow rects. Result: a two-element [CGRect] — main window plus Sparkle dialog.",
+                  "type == .keyDown, keycode == 53, and flags intersected with {Cmd, Control, Option, Shift} is empty. If any of those fails the event is dropped but no cancel fires. Ctrl+Esc does not abort. Shift+Esc does not abort.",
               },
               {
-                title: "enrichResponseData checks every element",
+                title: "Write the verification marker file",
                 description:
-                  "At main.swift:527, each element's (x, y) is passed to isPointInAnyWindow(point, windows: boundsToCheck). The Install button's point falls inside the Sparkle rect, so in_viewport becomes true.",
+                  "Before anything else, the callback writes /tmp/macos-use/esc_pressed.txt with a timestamp. This exists so you can prove the Esc was seen even if the downstream cancellation path failed somehow.",
               },
               {
-                title: "Diff paths reuse the same list",
+                title: "handleEscPressed flips _cancelled and tears the tap down",
                 description:
-                  "If this was a click_and_traverse call, the diff paths at main.swift:656, 695, and 700 use the same allWindowBounds list. Added elements, modified-before, modified-after: all three get tagged consistently.",
+                  "_cancelled = true under a lock. disengage() is called inline: CGEvent.tapEnable(false), CFRunLoopRemoveSource, CFMachPortInvalidate, stop watchdog, orderOut the overlay window. The onUserCancelled callback fires on an arbitrary thread.",
               },
               {
-                title: "Flat-text file + JSON response",
+                title: "Swallow the Esc so the focused app never sees it",
                 description:
-                  "The element is written to /tmp/macos-use/<timestamp>_<tool>.txt as [AXButton] 'Install' x:... y:... w:... h:... visible. The JSON sent back to the MCP client carries in_viewport: true on the same element.",
+                  "The callback returns nil, which suppresses the event from delivery. This matters because the focused app might have its own Esc handler (close modal, cancel search) that you do not want firing.",
               },
               {
-                title: "Agent filters on in_viewport: true",
+                title: "The next throwIfCancelled throws; handler's catch block restores state",
                 description:
-                  "The prompt layer keeps elements where in_viewport === true, drops false and nulls, picks its coordinate target. The click lands on the Sparkle Install button even though Sparkle is not the main window.",
+                  "The next step of the composed action hits try InputGuard.shared.throwIfCancelled(), which throws InputGuardCancelled. The catch block at main.swift:1847 disengages again (idempotent), reposts a mouseMoved at savedCursorPos, reactivates savedFrontmostApp, and returns 'Cancelled: user pressed Esc to abort <tool>' as an isError response.",
               },
             ]}
           />
@@ -599,36 +740,46 @@ export default function MacosUsePage() {
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-8">
-              The Numbers From the Diff
+              The Numbers From InputGuard.swift
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={27} />
+                    <NumberTicker value={355} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    new lines in commit 416674a (helpers)
+                    lines in InputGuard.swift end to end
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={42} />
+                    <NumberTicker value={11} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    lines changed in commit 8b9987d (wiring)
+                    CGEventTypes registered in the event mask
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={3} />
+                    <NumberTicker value={53} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    new free functions at main.swift:295-320
+                    keycode that aborts (plain Esc, US layout)
+                  </div>
+                </div>
+              </GlowCard>
+              <GlowCard>
+                <div className="p-6">
+                  <div className="text-4xl font-bold text-zinc-900">
+                    <NumberTicker value={30} suffix="s" />
+                  </div>
+                  <div className="text-sm text-zinc-500 mt-2">
+                    watchdog auto-release timeout
                   </div>
                 </div>
               </GlowCard>
@@ -638,264 +789,248 @@ export default function MacosUsePage() {
                     <NumberTicker value={4} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    call sites that use allWindowBounds (527, 656, 695, 700)
+                    throwIfCancelled call sites in a composed action
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={5.0} decimals={1} suffix="s" />
+                    <NumberTicker value={200} suffix="ms" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    AX messaging timeout on the app element
+                    grace window for late-Esc after the action completes
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={6} />
+                    <NumberTicker value={5} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    MCP tools that carry in_viewport in their responses
+                    tools that engage the guard (all except refresh_traversal)
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={2} />
+                    <NumberTicker value={0.8} decimals={1} suffix="s" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    structs that carry the field (Enriched + Diff)
-                  </div>
-                </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={1} />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    line of Swift inside isPointInAnyWindow
+                    overlay dot pulse period (1.0 → 0.3 opacity, autoreverses)
                   </div>
                 </div>
               </GlowCard>
             </div>
             <p className="text-zinc-500 text-sm mt-8">
-              Every number above is pulled from the diff of commits{" "}
-              <span className="font-mono">416674a</span> and{" "}
-              <span className="font-mono">8b9987d</span> or from a direct read
-              of the current{" "}
-              <span className="font-mono">main.swift</span>. The 5.0s timeout
-              is the default passed to{" "}
-              <span className="font-mono">AXUIElementSetMessagingTimeout</span>{" "}
-              in <span className="font-mono">getAllWindowBoundsFromAPI</span>.
+              Every number above is a direct read off{" "}
+              <span className="font-mono">Sources/MCPServer/InputGuard.swift</span>{" "}
+              and <span className="font-mono">main.swift</span> as of the
+              current commit. The 11 event types in the mask: keyDown, keyUp,
+              leftMouseDown, leftMouseUp, rightMouseDown, rightMouseUp,
+              mouseMoved, leftMouseDragged, rightMouseDragged, scrollWheel,
+              flagsChanged.
             </p>
           </div>
         </section>
 
-        {/* Terminal reproduction */}
+        {/* The createEventTap code, shown after the numbers so the mask count lands */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Verify The Behavior In Three Commands
+            The Mask, Written Out
           </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Clone the repo. Grep for the three helpers. Read the commits.
-            Nothing on this page is inferred; every fact is printable from a
-            clean checkout.
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            The mask is built one bitwise-OR at a time because Swift&rsquo;s
+            type checker times out when you give it a single big expression.
+            Practical detail that only shows up when you actually read the
+            file.
           </p>
-
-          <TerminalOutput
-            title="Reading the viewport mechanism from source"
-            lines={[
-              {
-                text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
-                type: "command",
-              },
-              {
-                text: "cd mcp-server-macos-use",
-                type: "command",
-              },
-              {
-                text: "grep -n 'getAllWindowBoundsFrom\\|isPointInAnyWindow\\|in_viewport' Sources/MCPServer/main.swift | head -15",
-                type: "command",
-              },
-              {
-                text: "168:// --- Enriched Data Structures (adds in_viewport metadata) ---",
-                type: "output",
-              },
-              {
-                text: "177:    var in_viewport: Bool?",
-                type: "output",
-              },
-              {
-                text: "191:    var in_viewport: Bool?",
-                type: "output",
-              },
-              {
-                text: "297:func getAllWindowBoundsFromTraversal(_ responseData: ResponseData?) -> [CGRect] {",
-                type: "output",
-              },
-              {
-                text: "308:func getAllWindowBoundsFromAPI(pid: pid_t) -> [CGRect] {",
-                type: "output",
-              },
-              {
-                text: "318:func isPointInAnyWindow(_ point: CGPoint, windows: [CGRect]) -> Bool {",
-                type: "output",
-              },
-              {
-                text: "623:    var allWindowBounds = getAllWindowBoundsFromTraversal(result.traversalAfter)",
-                type: "output",
-              },
-              {
-                text: "git log --oneline -- Sources/MCPServer/main.swift | head -3",
-                type: "command",
-              },
-              {
-                text: "8b9987d Update viewport detection to support multiple windows",
-                type: "output",
-              },
-              {
-                text: "416674a Add helpers for multi-window bounds extraction and point intersection",
-                type: "output",
-              },
-              {
-                text: "Every line above is reproducible from a clean clone.",
-                type: "success",
-              },
-            ]}
+          <AnimatedCodeBlock
+            code={tapCreateCode}
+            language="swift"
+            filename="Sources/MCPServer/InputGuard.swift"
           />
+          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
+            <span className="font-mono">place: headInsert</span> (value 0) is
+            the important choice. A tail-inserted tap would sit after every
+            app&rsquo;s own event handlers and wouldn&rsquo;t be able to
+            suppress the Esc before something else consumed it.
+          </p>
         </section>
 
-        {/* Before / after of the 8b9987d commit */}
+        {/* Terminal reproduction */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Before and After Commit 8b9987d
+              Verify The Kill-Switch In A Clean Checkout
             </h2>
-            <p className="text-zinc-600 mb-10 max-w-2xl">
-              Every line below is paraphrased from the actual diff of the
-              2026-04-10 commit that made the switch. You can open the commit
-              on GitHub and read the same rewrite.
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              Nothing on this page is inferred. Clone the repo, grep, read the
+              call sites, and the entire kill-switch is on disk in two files.
             </p>
 
-            <BeforeAfter
-              title="Viewport check, before and after multi-window support"
-              before={{
-                label: "main.swift, pre-2026-04-10",
-                content:
-                  "One rect. bounds.contains(CGPoint(x: x, y: y)) at main.swift:527 and main.swift:657. Every point outside the main AXWindow became in_viewport: false, even if it landed squarely inside a Sparkle update dialog, a Preferences window, or a Save sheet that was visible on screen.",
-                highlights: [
-                  "Single-window bounds only",
-                  "AXMainWindow as the only source of truth",
-                  "Sparkle Install button scored in_viewport: false",
-                  "Agent treated visible secondary windows as off-screen",
-                ],
-              }}
-              after={{
-                label: "main.swift, post-2026-04-10",
-                content:
-                  "A [CGRect] built from AXWindows (plural). isPointInAnyWindow(CGPoint(x: x, y: y), windows: allWindowBounds) at main.swift:527 and 657. Any element whose point falls inside any window in the list scores in_viewport: true. Legacy windowBounds is still computed for screenshot cropping and AXSheet scoping, but the viewport flag no longer depends on it.",
-                highlights: [
-                  "All AXWindows of the app are candidates",
-                  "isPointInAnyWindow is a one-line containment check",
-                  "Sparkle, Preferences, find bars all in_viewport: true",
-                  "Same list powers full-traversal and diff paths",
-                ],
-              }}
+            <TerminalOutput
+              title="Reading the kill-switch from source"
+              lines={[
+                {
+                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
+                  type: "command",
+                },
+                {
+                  text: "cd mcp-server-macos-use",
+                  type: "command",
+                },
+                {
+                  text: "wc -l Sources/MCPServer/InputGuard.swift",
+                  type: "command",
+                },
+                {
+                  text: "     355 Sources/MCPServer/InputGuard.swift",
+                  type: "output",
+                },
+                {
+                  text: "grep -n 'eventSourceStateID\\|keyCode == 53\\|watchdogTimeout\\|throwIfCancelled' Sources/MCPServer/InputGuard.swift",
+                  type: "command",
+                },
+                {
+                  text: "24:    var watchdogTimeout: TimeInterval = 30",
+                  type: "output",
+                },
+                {
+                  text: "53:    func throwIfCancelled() throws {",
+                  type: "output",
+                },
+                {
+                  text: "329:    let sourceStateID = event.getIntegerValueField(.eventSourceStateID)",
+                  type: "output",
+                },
+                {
+                  text: "345:        if keyCode == 53 && flags.intersection(modifierMask).isEmpty {",
+                  type: "output",
+                },
+                {
+                  text: "grep -n 'InputGuard' Sources/MCPServer/main.swift | head -10",
+                  type: "command",
+                },
+                {
+                  text: "1696:                InputGuard.shared.engage(message: \"AI: \\(toolDesc) — press Esc to cancel\")",
+                  type: "output",
+                },
+                {
+                  text: "1708:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
+                  type: "output",
+                },
+                {
+                  text: "1721:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
+                  type: "output",
+                },
+                {
+                  text: "1728:                    if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
+                  type: "output",
+                },
+                {
+                  text: "1734:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
+                  type: "output",
+                },
+                {
+                  text: "1758:                let wasCancelled = InputGuard.shared.wasCancelled",
+                  type: "output",
+                },
+                {
+                  text: "All four throwIfCancelled sites + engage + wasCancelled check are right there.",
+                  type: "success",
+                },
+              ]}
             />
           </div>
         </section>
 
-        {/* Comparison table */}
+        {/* Comparison */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            How macos-use Reports Visibility vs Other macOS MCP Servers
+            macos-use vs Every Other Way To Automate macOS
           </h2>
           <ComparisonTable
             productName="macos-use"
-            competitorName="Other macOS MCP servers"
+            competitorName="AppleScript / Shortcuts / other macOS MCPs"
             rows={[
               {
-                feature: "Reads AX tree instead of screenshots",
-                ours: "Yes (AXUIElement + CGEvent)",
-                competitor:
-                  "Mixed (screenshot-based, AppleScript-based, or hybrid)",
-              },
-              {
-                feature: "Tags every element with a visibility boolean",
-                ours: "Yes (in_viewport: Bool?)",
+                feature: "Hardware input blocked during automation",
+                ours: "Yes (CGEventTap, .cghidEventTap, head-insert)",
                 competitor: "No",
               },
               {
-                feature: "Handles apps with multiple windows",
-                ours: "Yes (AXWindows list, not just AXMainWindow)",
-                competitor: "Single-window or undocumented",
-              },
-              {
-                feature: "Sparkle / inspector / Preferences visible to agent",
-                ours: "Yes",
+                feature: "User can abort mid-sequence with one key",
+                ours: "Yes (plain Esc, keycode 53)",
                 competitor: "No",
               },
               {
-                feature: "Distinguishes 'unknown' (nil) from 'off-screen' (false)",
-                ours: "Yes (Bool? tri-state)",
-                competitor: "No",
-              },
-              {
-                feature: "Same in_viewport on full traversal and diff",
-                ours: "Yes (allWindowBounds reused across paths)",
+                feature: "Distinguishes user input from tool's own posts",
+                ours: "Yes (eventSourceStateID != 0 passes through)",
                 competitor: "N/A",
               },
               {
-                feature: "Viewport rect flipped to AXSheet when one is up",
-                ours: "Yes (findSheetBounds at main.swift:243)",
+                feature: "Visible on-screen indicator while active",
+                ours: "Yes (NSWindow at .screenSaver level, pulsing dot)",
+                competitor: "Varies / none",
+              },
+              {
+                feature: "Auto-release if the tool handler hangs",
+                ours: "Yes (30-second DispatchSource watchdog)",
                 competitor: "No",
               },
               {
-                feature: "Native Swift binary, no Node runtime at runtime",
-                ours: "Yes",
-                competitor: "Mixed",
+                feature: "Self-heals if macOS auto-disables the tap",
+                ours: "Yes (tapDisabledByTimeout / ByUserInput re-enable)",
+                competitor: "N/A",
+              },
+              {
+                feature: "Restores cursor + frontmost app on abort",
+                ours: "Yes (savedCursorPos + savedFrontmostApp)",
+                competitor: "No",
+              },
+              {
+                feature: "Marker file so you can verify Esc was detected",
+                ours: "/tmp/macos-use/esc_pressed.txt",
+                competitor: "N/A",
               },
             ]}
           />
         </section>
 
-        {/* Marquee: secondary windows that used to score false */}
+        {/* Marquee: concrete events the tap masks */}
         <section className="py-12">
           <div className="max-w-4xl mx-auto px-6 mb-6">
             <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-              Secondary Windows That Score in_viewport: true Now
+              Every Hardware Event Type The Tap Drops
             </h2>
             <p className="text-zinc-500">
-              Each of these used to be invisible to an MCP agent driving the
-              app. After the all-windows fix, every one of them is a valid
-              click target.
+              Registered in the event mask at{" "}
+              <span className="font-mono text-sm">InputGuard.swift:113-127</span>
+              . Every one of these, from a physical device, is returned as{" "}
+              <span className="font-mono text-sm">nil</span> (suppressed) for
+              the entire duration of a disruptive tool call.
             </p>
           </div>
           <Marquee speed={30} fade pauseOnHover>
             {[
-              "Sparkle update dialog",
-              "Safari Preferences",
-              "Mail Compose",
-              "Messages New Message",
-              "Xcode Inspector",
-              "Keynote Inspector",
-              "Notes Pop-out",
-              "Pages Preferences",
-              "System Settings subpanes",
-              "Slack Preferences",
-              "Chrome Incognito",
-              "VS Code Command Palette",
-              "1Password Mini",
-              "Find bar sheets",
+              "keyDown",
+              "keyUp",
+              "leftMouseDown",
+              "leftMouseUp",
+              "rightMouseDown",
+              "rightMouseUp",
+              "mouseMoved",
+              "leftMouseDragged",
+              "rightMouseDragged",
+              "scrollWheel",
+              "flagsChanged",
             ].map((name) => (
               <div
                 key={name}
-                className="mx-3 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm whitespace-nowrap"
+                className="mx-3 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm whitespace-nowrap font-mono"
               >
                 {name}
               </div>
@@ -906,9 +1041,9 @@ export default function MacosUsePage() {
         {/* Proof banner */}
         <section className="max-w-4xl mx-auto px-6 py-10">
           <ProofBanner
-            quote="The thing that makes macos-use safe for an agent to plan with is not just that it reads the AX tree; it is that every element it returns carries a server-computed visibility flag, checked against every window of the target app."
-            source="main.swift:295-320 + 623-700"
-            metric="in_viewport: Bool?"
+            quote="The part that makes macos-use safe to run on the same machine you use to live is not a prompt rule or a permission dialog; it is 355 lines of Swift that put a CGEventTap and a pulsing overlay in between every tool call and your keyboard."
+            source="InputGuard.swift + main.swift:1666-1864"
+            metric="Esc = abort"
           />
         </section>
 
@@ -916,7 +1051,7 @@ export default function MacosUsePage() {
         <section className="max-w-4xl mx-auto px-6 py-4">
           <InlineCta
             heading="Wire macos-use into your MCP client"
-            body="The server runs wherever Claude Code, Cursor, or any MCP client can spawn a binary. Install once; every tool call will carry in_viewport on every element."
+            body="The server runs wherever Claude Code, Cursor, or any MCP client can spawn a binary. Every disruptive tool call will bring up the overlay, and Esc will always get you out."
             linkText="Install from npm"
             href="https://www.npmjs.com/package/mcp-server-macos-use"
           />
@@ -928,25 +1063,24 @@ export default function MacosUsePage() {
         {/* Final CTA */}
         <section className="max-w-4xl mx-auto px-6 py-16 text-center">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Read the diff, not the README.
+            Read the kill-switch.
           </h2>
           <p className="text-zinc-500 mb-8 max-w-xl mx-auto">
-            Two commits,{" "}
-            <span className="font-mono text-sm">416674a</span> and{" "}
-            <span className="font-mono text-sm">8b9987d</span>, landed the
-            multi-window viewport fix on 2026-04-10. Clone the repo and run{" "}
-            <span className="font-mono text-sm">git show 8b9987d</span> to see
-            the whole change in one scroll.
+            355 lines, one file, reproduces cleanly.{" "}
+            <span className="font-mono text-sm">InputGuard.swift</span> plus the
+            call sites at{" "}
+            <span className="font-mono text-sm">main.swift:1666-1864</span>{" "}
+            are the entire story.
           </p>
-          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use">
-            Open the repo on GitHub
+          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift">
+            Open InputGuard.swift on GitHub
           </ShimmerButton>
         </section>
 
         <StickyBottomCta
-          description="macos-use tags every element with in_viewport across all of the app's windows"
-          buttonLabel="Read main.swift"
-          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift"
+          description="macos-use engages a CGEventTap before every tool call — press Esc to cancel"
+          buttonLabel="Read InputGuard.swift"
+          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift"
         />
       </article>
     </>
