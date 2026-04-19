@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { SeoComponentsStyles } from "@seo/components/server";
-import { HeadingAnchors, FullSiteAnalytics } from "@seo/components";
+import { HeadingAnchors, FullSiteAnalytics, NewsletterSignup } from "@seo/components";
 import { SiteSidebar } from "@/components/site-sidebar";
 import { GuideChat } from "@/components/guide-chat";
 import "./globals.css";
@@ -33,6 +33,7 @@ export default function RootLayout({
             </main>
             <GuideChat />
           </div>
+          <NewsletterSignup />
         </FullSiteAnalytics>
       </body>
     </html>

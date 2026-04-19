@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BookCallButton } from "@/components/book-call-button";
 
 export default function HomePage() {
   return (
@@ -8,6 +9,9 @@ export default function HomePage() {
         A Swift MCP server that lets AI agents control any macOS application
         through native accessibility APIs.
       </p>
+      <div className="mb-10">
+        <BookCallButton section="hero" />
+      </div>
       <ul className="space-y-3 text-teal-700">
         <li>
           <Link
