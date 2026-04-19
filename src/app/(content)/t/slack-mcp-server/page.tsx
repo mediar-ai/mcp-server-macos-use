@@ -550,7 +550,7 @@ export default function SlackMcpServerPage() {
             actors={["AI Client", "mcp-server-macos-use", "Slack.app", "disk"]}
             messages={[
               { from: 0, to: 1, label: "callTool(click_and_traverse)", type: "request" },
-              { from: 1, to: 1, label: "InputGuard.engage() — block human input", type: "event" },
+              { from: 1, to: 1, label: "InputGuard.engage() blocks human input", type: "event" },
               { from: 1, to: 2, label: "find AXTextArea 'Message to standups'", type: "request" },
               { from: 2, to: 1, label: "x:412 y:1034 w:1180 h:40", type: "response" },
               { from: 1, to: 2, label: "CGEvent click at (1002, 1054)", type: "event" },
@@ -559,7 +559,7 @@ export default function SlackMcpServerPage() {
               { from: 1, to: 2, label: "traverse AX tree again", type: "request" },
               { from: 2, to: 1, label: "412 elements incl. new message", type: "response" },
               { from: 1, to: 3, label: "write <ts>_click_and_traverse.txt + .png", type: "event" },
-              { from: 1, to: 1, label: "InputGuard.disengage() — restore cursor", type: "event" },
+              { from: 1, to: 1, label: "InputGuard.disengage(), cursor restored", type: "event" },
               { from: 1, to: 0, label: "compact summary (file, screenshot, status)", type: "response" },
             ]}
           />
