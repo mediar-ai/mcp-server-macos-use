@@ -303,34 +303,22 @@ const responseFieldCards = [
 
 const sixToolsChecklist = [
   {
-    title: "macos-use_open_application_and_traverse",
-    description:
-      "Opens an app by name, path, or bundle ID. Returns a full traversal in the paired file. Starts most sessions.",
+    text: "macos-use_open_application_and_traverse — opens an app by name, path, or bundle ID; returns a full traversal in the paired file. Starts most sessions.",
   },
   {
-    title: "macos-use_click_and_traverse",
-    description:
-      "Clicks at (x, y) or by `element` text match. Optionally types text and presses a key in the SAME call. Returns a diff of what changed.",
+    text: "macos-use_click_and_traverse — clicks at (x, y) or by `element` text match; optionally types text and presses a key in the SAME call; returns a diff of what changed.",
   },
   {
-    title: "macos-use_type_and_traverse",
-    description:
-      "Types into the frontmost field. Optional pressKey afterwards. Returns a diff, paired with a post-type screenshot.",
+    text: "macos-use_type_and_traverse — types into the frontmost field, with an optional pressKey afterwards. Returns a diff paired with a post-type screenshot.",
   },
   {
-    title: "macos-use_press_key_and_traverse",
-    description:
-      "Sends a key with optional modifiers (Command, Shift, etc). Useful for shortcuts (cmd+R, cmd+,) and navigation (Return, Escape, Tab).",
+    text: "macos-use_press_key_and_traverse — sends a key with optional modifiers (Command, Shift, etc.). Useful for shortcuts (cmd+R, cmd+,) and navigation (Return, Escape, Tab).",
   },
   {
-    title: "macos-use_scroll_and_traverse",
-    description:
-      "Posts a scroll wheel event at (x, y). Delta is in lines, not pixels. Needed when target elements are below the fold.",
+    text: "macos-use_scroll_and_traverse — posts a scroll wheel event at (x, y). Delta is in lines, not pixels. Needed when target elements are below the fold.",
   },
   {
-    title: "macos-use_refresh_traversal",
-    description:
-      "Re-traverses the app without taking any action. Emits a full tree + screenshot. No diff; useful to re-anchor when the model is confused.",
+    text: "macos-use_refresh_traversal — re-traverses the app without any action. Emits a full tree + screenshot. No diff; useful to re-anchor when the model is confused.",
   },
 ];
 
