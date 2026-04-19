@@ -322,6 +322,7 @@ export default function HowToControlFaceTimePage() {
           <BeforeAfter
             title="Two different contracts with the remote party"
             before={{
+              label: "Remote-takes-the-wheel (FaceTime / Zoom / TeamViewer)",
               content:
                 "Apple FaceTime remote control (iOS 18 / macOS 15) or Zoom / TeamViewer / Screen Sharing.app: the remote person moves your cursor directly. When they stop, the cursor sits wherever they left it. No auditor between narration and action.",
               highlights: [
@@ -332,6 +333,7 @@ export default function HowToControlFaceTimePage() {
               ],
             }}
             after={{
+              label: "Remote-narrates (macos-use local MCP)",
               content:
                 "macos-use local MCP + FaceTime SharePlay: the remote person narrates, the AI runs macos-use_click_and_traverse on your Mac, and the snap-back at main.swift:1767-1781 puts your cursor back home after every action. Same restore runs if you hit Esc mid-call.",
               highlights: [
