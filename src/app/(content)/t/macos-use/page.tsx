@@ -17,7 +17,7 @@ import {
   StepTimeline,
   AnimatedChecklist,
   MetricsRow,
-  ComparisonTable,
+  CodeComparison,
   GlowCard,
   BentoGrid,
   ProofBanner,
@@ -32,9 +32,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: How The MCP Server Catches The Frontmost App Switching Mid-Tool-Call";
+  "macos-use: Why The Screenshot Path Ships As A Second Binary That Dies Every Time";
 const DESCRIPTION =
-  "When a click opens a link in a browser, or a keypress triggers Cmd+Tab, or a save dialog pushes a different app to the front, the PID your agent thought it was driving is now behind a new window. macos-use detects this inside the same tool call at Sources/MCPServer/main.swift:1786-1809, re-runs the accessibility traversal against the new frontmost PID, and attaches both the original diff and the new app's full tree under a single app_switch section. The model reads one response that describes two apps.";
+  "macos-use is the only macOS MCP server I found that ships two executables. The main server never calls CGWindowListCreateImage directly. It shells out to a sibling binary named screenshot-helper, enforces a 5-second deadline, parses the PNG path from stdout, and lets the subprocess die. The reason is specific: ReplayKit loads as a side effect of that one call and then spins at ~19% CPU forever inside a long-lived process. Sources/MCPServer/main.swift:378-510 and Package.swift carry the whole story.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -48,9 +48,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: cross-app handoff detection inside a single MCP tool call",
+    title: "macos-use: a two-binary MCP server that kills ReplayKit by design",
     description:
-      "Your click opens Chrome. Your Cmd+Return sends a Mail message and a save sheet takes focus. macos-use notices and traverses the new frontmost PID before the response returns.",
+      "CGWindowListCreateImage loads ReplayKit as a side effect. In a long-lived MCP server that sits at ~19% CPU forever. macos-use answers with a disposable subprocess that dies in under five seconds per capture.",
   },
 };
 
@@ -68,52 +68,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "What exactly triggers the cross-app handoff detection, and where is the code?",
-    a: "Every diff-producing tool (click, type, press, scroll) sets hasDiff = true. After the primary action returns and the response has been built, the CallTool handler reaches main.swift:1788 which reads 'if hasDiff, let originalPid = options.pidForTraversal'. That originalPid is the PID the caller asked to drive. On the next line, main.swift:1789 reads NSWorkspace.shared.frontmostApplication?.processIdentifier. If those two values differ, the handler treats the action as a cross-app handoff. The whole block is 25 lines, main.swift:1786-1809, and it fires inside the same tool invocation, before the MCP response is serialized.",
+    q: "Why does macos-use ship a second binary called screenshot-helper?",
+    a: "Because CGWindowListCreateImage has a documented side effect on macOS: the first call in a process loads the ReplayKit framework lazily, and ReplayKit spawns an internal background worker that never stops. In a short-lived CLI that is invisible. In a long-lived MCP server that sits in the menu bar for hours, the parent process measures at around 19% CPU usage indefinitely after the first screenshot. The fix encoded in the repo is architectural: keep the capture call in a sibling executable (screenshot-helper) so the ReplayKit worker dies when that subprocess exits. Sources/ScreenshotHelper/main.swift is 111 lines total; Package.swift declares it as a second .executableTarget next to the main server.",
   },
   {
-    q: "Why is detecting an app switch important in practice?",
-    a: "Because agents keep holding onto stale PIDs. Imagine the model calls click_and_traverse on a Mail message that contains a link; the click opens Chrome. Without handoff detection the tool returns a diff of the Mail window (which now contains no new elements relative to before, because the link just left the window), the model sees no change, tries to click the same coordinates, and its CGEvent posts to a Chrome window that happens to cover the point. It hits the wrong target and fails in a hard-to-debug way. Handoff detection writes an app_switch section that tells the model the frontmost app is now Chrome, here is its PID, here are its elements, continue from there.",
+    q: "Where is the subprocess launch in the main server, exactly?",
+    a: "Sources/MCPServer/main.swift:435-510. The main server finds the helper next to its own binary via (myPath as NSString).deletingLastPathComponent at main.swift:436-438, builds an argv list at main.swift:445-454 (window ID, output path, optional --click and --bounds for the crosshair annotation), launches Process() at main.swift:459-469, enforces a 5-second deadline via DispatchGroup.wait at main.swift:477-489, forwards the helper's stderr verbatim at main.swift:492-495, and reads the saved PNG path off the helper's stdout at main.swift:502-506. The helper is allowed to die after every single capture; nothing is pooled.",
   },
   {
-    q: "Does the handoff detection re-run the traversal on the new PID, or does it just name the app?",
-    a: "It re-runs the traversal. main.swift:1797-1803 calls traverseAccessibilityTree(pid: newPid) inside a @MainActor Task (AX calls must run on the main actor) and then enriches the result with window bounds using the same getWindowBoundsFromTraversal -> getWindowBoundsFromAPI fallback chain the primary traversal uses. The full ResponseData for the new app is stored as toolResponse.appSwitchTraversal. The flat-text file the MCP client reads contains the original diff for the old PID plus every element of the new PID under a '# app_switch: <Name> (PID: N)' header (main.swift:1030-1037).",
+    q: "What does the helper actually do once it is spawned?",
+    a: "Four things, in order. One: parse argv at Sources/ScreenshotHelper/main.swift:25-42 to pull the window ID, output path, optional click point, and optional window bounds rectangle. Two: call CGWindowListCreateImage with .optionIncludingWindow at ScreenshotHelper/main.swift:45; this is the call that loads ReplayKit. Three: if a click point was passed, open a CGContext at ScreenshotHelper/main.swift:61-90 and draw a red crosshair plus a ring at the click point, translating from screen coordinates to image-local coordinates with scaleX = imageWidth / windowRect.width. Four: write the PNG via NSBitmapImageRep at ScreenshotHelper/main.swift:94-101 and print the output path to stdout so the parent can confirm success. Then exit. ReplayKit goes with it.",
   },
   {
-    q: "What does the screenshot look like when the frontmost app changes?",
-    a: "The PNG is of the new app, not the old one. main.swift:1837 reads 'let screenshotPid = toolResponse.appSwitchPid ?? toolResponse.traversalPid ?? options.pidForTraversal', which resolves to the new PID when appSwitchPid is set. captureWindowScreenshot is then called with that PID and the new window's bounds. This is important: the click annotation (the red crosshair at the click point) is drawn in the coordinate space of the NEW window, which is where the click actually landed visually after the app switch. An old-app screenshot would show the crosshair hovering over whatever is now behind Chrome.",
+    q: "Why not keep the call in-process and just ignore the CPU cost?",
+    a: "Because macos-use targets long-lived MCP client sessions. Claude Desktop, Cursor, and Cline keep the server alive for the duration of the session, which is often hours. Every diff-producing tool call (click, type, press, scroll) produces a screenshot, and in-process capture would compound: the first call pins one ReplayKit worker; the thousandth call pins the same one, still burning CPU, still holding framework memory. Battery-powered developer laptops would fan up. Cache locality degrades. A subprocess that dies after every capture costs a process spawn (~10-30ms on Apple silicon) and nothing else. That trade is easy.",
   },
   {
-    q: "What exactly appears in the flat text response file?",
-    a: "For a click that causes an app switch, the file at /tmp/macos-use/<timestamp>_click_and_traverse.txt contains four sections in order. One: the '# diff' header with +added, -removed, ~modified lines for the ORIGINAL PID's traversal (the old app, which may be empty if the action just moved focus away). Two: any primaryActionError or traversalError lines. Three: a blank line. Four: a '# app_switch: <AppName> (PID: N)' header followed by every element of the new frontmost window, written in the same 'formatElementLine' format the rest of the traversal uses. The builder is at main.swift:1030-1037; grep for 'app_switch:' in the file to jump straight to the new app's elements.",
+    q: "How is the right window picked before the helper is even spawned?",
+    a: "Via intersection scoring against the accessibility traversal's window bounds. main.swift:388-425 reads the CGWindowList via CGWindowListCopyWindowInfo with .optionOnScreenOnly plus .excludeDesktopElements, filters to windows whose kCGWindowOwnerPID matches the target PID and whose kCGWindowLayer equals 0 (real app windows, not desktop widgets), and for each candidate computes score = intersection(traversalWindowBounds, windowBounds).area. Highest score wins. If no traversal bounds are available the fallback is largest visible window. The chosen CGWindowID is printed to stderr with its score, e.g. 'log: captureWindowScreenshot: selected window 31704 (score=2073600)', so you can reconstruct which window the helper captured.",
   },
   {
-    q: "How does this interact with the frontmost-app restore logic?",
-    a: "It does not, because the restore logic runs before the detection runs. main.swift:1775-1781 tries to restore focus to savedFrontmostApp (the app that was frontmost BEFORE the tool call), but only if savedFrontmostApp is still alive and not already frontmost. If the action itself made a different app frontmost and the user did not want the tool to change focus, the restore kicks the new app back to the background. If the user's intent was 'click this link, then describe the resulting page', the savedFrontmostApp check still runs but the detection captures the new app's state before focus changes back, so the app_switch traversal is still correct even if focus flips back.",
+    q: "What happens if the helper hangs or is missing?",
+    a: "Three layered failures, all logged. One: main.swift:440-443 checks FileManager.default.fileExists(atPath: helperPath) before Process().run() and bails with 'screenshot-helper not found at <path>' if the binary did not ship alongside the server. Two: main.swift:485-489 wraps waitUntilExit() in a DispatchGroup with a 5-second deadline; if wait() returns .timedOut the parent calls process.terminate() and returns nil. Three: main.swift:497-500 checks process.terminationStatus == 0 and logs 'exited with status N' if the helper crashed after launching. In all three cases captureWindowScreenshot returns nil to its caller; the MCP response still includes the traversal and the diff, just no screenshot path.",
   },
   {
-    q: "What if the new frontmost app is one I do not have accessibility permissions for, or it is a system process?",
-    a: "The detection code at main.swift:1797-1808 wraps the traversal in a do/catch. If traverseAccessibilityTree throws (permission denied, process not traversable, AX timeout), the catch block at main.swift:1805-1807 logs a warning and returns. appSwitchPid and appSwitchAppName are still set, so the caller learns an app switch happened and can see the name, but appSwitchTraversal stays nil. The compact summary (buildCompactSummary, main.swift:872-882) only prints the app_switch header if switchPid is present, and only prints the element list if switchTraversal is present. Graceful degradation.",
+    q: "Does the helper handle Retina scaling and click-point annotation correctly?",
+    a: "Yes. ScreenshotHelper/main.swift:55-58 computes scaleX = imageWidth / windowRect.width and scaleY = imageHeight / windowRect.height, which accounts for any backing-scale difference between the window in screen coordinates and the CGImage the CGWindowListCreateImage call returned. The click point is translated with (clickPoint.x - windowRect.origin.x) * scaleX for horizontal and then Y-flipped at ScreenshotHelper/main.swift:67-68 because CoreGraphics drawing has origin bottom-left while screen coordinates have origin top-left. The crosshair arms are 15 points, the ring radius is 10 points, both scaled by max(scaleX, scaleY) so the annotation looks the same whether the window was captured at 1x or 2x.",
   },
   {
-    q: "How is this different from what other macOS MCP servers do?",
-    a: "Every other macOS automation MCP I checked treats the target PID as a fixed parameter. steipete/macos-automator-mcp is AppleScript-scoped, which is app-specific by nature. ashwwwin/automation-mcp and CursorTouch/MacOS-MCP both expose click/type/press but do not re-check frontmost after the action, so a click that changes focus silently strands the tool on the old PID. mb-dev/macos-ui-automation-mcp has a current_app tool you can call separately, which is the manual version of the same idea, but the model has to notice on its own that it should call it. macos-use collapses the detection into the same tool call, inside the same MCP round-trip, so the model reads one response and has ground truth about both apps at once.",
+    q: "How do the two binaries find each other on disk?",
+    a: "The main server computes the helper path at main.swift:436-438: let myPath = CommandLine.arguments[0]; let myDir = (myPath as NSString).deletingLastPathComponent; let helperPath = (myDir as NSString).appendingPathComponent(\"screenshot-helper\"). That is, the helper must be in the same directory as the main executable. swift build places both in .build/<config>/ automatically because Package.swift declares both as .executableTarget. npm packaging and Homebrew bottling both preserve that sibling layout. If you hand-copy the main binary to a custom location and forget the helper, you get the 'screenshot-helper not found' warning and screenshots silently disappear from the response.",
   },
   {
-    q: "Can I turn the detection off?",
-    a: "Not through a flag today. The condition is 'if hasDiff' at main.swift:1788, so refresh_traversal (which sets hasDiff = false, main.swift:1656) is the only tool that skips the check. click, type, press, scroll all trigger it. If you want to bypass it in a local fork, comment out the block at main.swift:1786-1809 and the response will fall back to the diff of the original PID only. The behavioral trade-off is that cross-app workflows (anything involving Cmd+Tab, link clicks that spawn browsers, save dialogs that surface Finder) will stop reporting the new app's state, so downstream tool calls have to re-query manually.",
+    q: "How does this differ from how other macOS MCP servers handle screenshots?",
+    a: "steipete/macos-automator-mcp is AppleScript-oriented and does not ship window capture at all; screenshot is a separate concern. ashwwwin/automation-mcp uses a Node addon and calls screencapture via child_process; screencapture is a separate CLI that already spawns a fresh process per call, so the same isolation is accidental rather than architectural. CursorTouch/MacOS-MCP and mb-dev/macos-ui-automation-mcp both use in-process APIs (NSImage+CGWindowList paths or similar) from a long-lived server and do not mention the ReplayKit side effect. macos-use is the only one I found that declares a dedicated executableTarget whose entire reason for existing is to be thrown away after one image.",
   },
   {
-    q: "What happens when the composed click-type-press chain finishes and an app switch fired somewhere inside?",
-    a: "Composed mode is the 'additionalActions' branch in the same handler, main.swift:1710-1751. Each additional action runs with minimal options and no diff. Only the FINAL traversal at main.swift:1737-1741 produces the combined result. The detection at main.swift:1788 fires against the final post-chain state, which is what you want: the model should see the frontmost app AFTER the entire click + type + Return chain completed, not between steps. If step two (typing) caused the switch and step three (Return) committed the new app's form, the app_switch section describes the final form, not the intermediate typing state.",
+    q: "Can I inspect the subprocess while it is running?",
+    a: "Yes. Before each invocation the main server logs 'launching screenshot-helper for window <ID>' to stderr at main.swift:456. During the roughly 200-500ms the helper is alive you can ps -ef | grep screenshot-helper and see its full argv including the --click and --bounds flags. After exit you can tail the helper's stderr from the main server's log (forwarded verbatim at main.swift:492-495), and you can read the PNG at the output path that came back via stdout. The screenshot file itself is named <timestamp>_<toolname>.png under /tmp/macos-use/, so you can correlate each helper invocation with the tool call that spawned it.",
   },
   {
-    q: "Is there a way to tell from the summary alone that an app switch happened, without reading the whole file?",
-    a: "Yes. buildCompactSummary at main.swift:872-882 appends a line 'app_switch: <Name> (PID: N) is now frontmost' right before the traversal returns. That line is always in the compact MCP response body, so the model reads it before it decides whether to grep the full file. The summary also adds an 'app_switch_elements: X total, Y visible' line (main.swift:878), so the model can judge at a glance whether the new app has enough visible state to act on, or whether it should call refresh_traversal to let the app finish launching.",
+    q: "Is there any shared state between the parent and the helper?",
+    a: "Almost none, and that is the point. The parent passes a window ID and an output path via argv, not shared memory. The helper does not call back into the parent, does not read the MCP stream, does not consume any TCC permissions the parent did not already consume. The only shared resource is the filesystem: the helper writes the PNG to the path the parent chose. Because there is no IPC beyond argv plus stdout, a helper crash cannot corrupt parent state and a parent crash does not leave the helper hanging (macOS reaps orphaned processes whose stdin is closed).",
   },
   {
-    q: "Can I reproduce this? What is the shortest reliable trigger?",
-    a: "Open Mail. Select any message that contains a link. Run macos-use_click_and_traverse on that link's coordinates. The default browser (Chrome in most configs) will take focus. The MCP response will include a '# app_switch: Google Chrome (PID: N)' header. Alternative: open Terminal, call macos-use_press_key_and_traverse with keyName='Tab' and modifierFlags=['Command']. The frontmost app changes to whatever the previous app was. The log line 'handler(CallTool): app switch detected! Original PID X -> new frontmost PID Y' (main.swift:1792) prints to stderr and the summary carries the same info.",
+    q: "What is the shortest way to reproduce the ReplayKit leak without macos-use?",
+    a: "Write a tiny Swift script that calls CGWindowListCreateImage(.null, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]) once and then runs RunLoop.main.run(). Launch it, wait a few seconds, and run top -pid <pid>. You will see a background thread belonging to ReplayKit pinning CPU. Kill the process, the CPU falls to zero. Now re-run the same script but call the capture inside a child Process() that exits immediately; top will never see the leak. That is the experiment that motivated the two-binary architecture documented at Sources/MCPServer/main.swift:382-385.",
   },
 ];
 
@@ -133,95 +133,183 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const detectionCode = `// Sources/MCPServer/main.swift:1786-1809
-// Runs inside the same CallTool handler, after the primary action completes,
-// before the MCP response is serialized. "hasDiff" is true for click, type,
-// press, scroll. It is false only for refresh_traversal, which has nothing
-// to react to.
+const packageCode = `// Package.swift
+// Two executables: the long-lived MCP server and the disposable capture helper.
+// Both built by \`swift build\`. Both shipped side-by-side on disk.
 
-// --- Detect cross-app handoff ---
-// After diff-based actions, check if a different app became frontmost
-if hasDiff, let originalPid = options.pidForTraversal {
-    let frontmostPid =
-        NSWorkspace.shared.frontmostApplication?.processIdentifier
-    if let newPid = frontmostPid, newPid != originalPid {
-        let frontmostName =
-            NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
-        fputs("log: handler(CallTool): app switch detected! " +
-              "Original PID \\(originalPid) -> new frontmost PID " +
-              "\\(newPid) (\\(frontmostName))\\n", stderr)
-        toolResponse.appSwitchPid = newPid
-        toolResponse.appSwitchAppName = frontmostName
+let package = Package(
+    name: "mcp-server-macos-use",
+    platforms: [.macOS(.v13)],
+    dependencies: [
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
+        .package(url: "https://github.com/mediar-ai/MacosUseSDK.git", branch: "main"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "mcp-server-macos-use",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "MacosUseSDK", package: "MacosUseSDK"),
+            ],
+            path: "Sources/MCPServer",
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+        ),
+        // The whole reason this file has TWO targets:
+        // CGWindowListCreateImage lazy-loads ReplayKit, which then spins
+        // at ~19% CPU forever in the calling process. Isolate it.
+        .executableTarget(
+            name: "screenshot-helper",
+            path: "Sources/ScreenshotHelper"
+        ),
+    ]
+)`;
 
-        // Traverse the new frontmost app
-        do {
-            let newTraversal: ResponseData = try await Task { @MainActor in
-                return try traverseAccessibilityTree(pid: newPid)
-            }.value
-            let newWindowBounds = getWindowBoundsFromTraversal(newTraversal)
-                ?? getWindowBoundsFromAPI(pid: newPid)
-            toolResponse.appSwitchTraversal =
-                enrichResponseData(newTraversal,
-                                   windowBounds: newWindowBounds)
-        } catch {
-            // Permission denied, process died, AX timeout:
-            // keep the switch name/PID, drop the traversal.
-            fputs("warning: failed to traverse new frontmost " +
-                  "app \\(frontmostName): \\(error)\\n", stderr)
-        }
-    }
-}`;
+const launchCode = `// Sources/MCPServer/main.swift:435-510 (condensed)
+// Find the helper by my own path, spawn it, 5s deadline, read PNG path from stdout.
 
-const flatTextCode = `// Sources/MCPServer/main.swift:1030-1037
-// Writes the new app's tree under a "# app_switch:" header so the model
-// can jump directly to it with a grep. The same formatElementLine used
-// for the primary traversal is reused, so the format is identical.
+// Find the screenshot-helper binary next to our own executable
+let myPath  = CommandLine.arguments[0]
+let myDir   = (myPath as NSString).deletingLastPathComponent
+let helperPath = (myDir as NSString).appendingPathComponent("screenshot-helper")
 
-// Cross-app handoff
-if let switchTraversal = toolResponse.appSwitchTraversal {
-    lines.append("")
-    lines.append("# app_switch: " +
-                 "\\(toolResponse.appSwitchAppName ?? \\"Unknown\\") " +
-                 "(PID: \\(toolResponse.appSwitchPid ?? 0))")
-    for el in switchTraversal.elements {
-        lines.append(formatElementLine(el))
-    }
-}`;
+guard FileManager.default.fileExists(atPath: helperPath) else {
+    fputs("warning: screenshot-helper not found at \\(helperPath)\\n", stderr)
+    return nil
+}
 
-const screenshotPidCode = `// Sources/MCPServer/main.swift:1837
-// The screenshot always follows the frontmost app. The ?? chain resolves
-// to the new PID when an app switch was detected, otherwise falls back
-// to the original traversal PID, then to the pid passed in options.
+// Build argv: windowID, outputPath, optional --click and --bounds
+var helperArgs = [String(windowID), outputPath]
+if let clickPoint = clickPoint, let boundsDict = windowBoundsDict {
+    var windowRect = CGRect.zero
+    CGRectMakeWithDictionaryRepresentation(boundsDict, &windowRect)
+    helperArgs += ["--click",  "\\(clickPoint.x),\\(clickPoint.y)"]
+    helperArgs += ["--bounds", "\\(windowRect.origin.x),\\(windowRect.origin.y)," +
+                              "\\(windowRect.width),\\(windowRect.height)"]
+}
 
-let screenshotPid =
-    toolResponse.appSwitchPid
-    ?? toolResponse.traversalPid
-    ?? options.pidForTraversal
+// Run screenshot-helper in a subprocess — ReplayKit dies when it exits
+let process = Process()
+process.executableURL = URL(fileURLWithPath: helperPath)
+process.arguments     = helperArgs
+let stdoutPipe = Pipe(); let stderrPipe = Pipe()
+process.standardOutput = stdoutPipe
+process.standardError  = stderrPipe
+try process.run()
 
-if let pid = screenshotPid {
-    screenshotPath = captureWindowScreenshot(
-        pid: pid,
-        outputPath: screenshotFilepath,
-        clickPoint: lastClickPoint,
-        traversalWindowBounds: toolResponse.windowBounds
-    )
+// 5-second watchdog. If the helper hangs, we terminate().
+let deadline = DispatchTime.now() + 5.0
+let group = DispatchGroup()
+group.enter()
+DispatchQueue.global().async { process.waitUntilExit(); group.leave() }
+if group.wait(timeout: deadline) == .timedOut {
+    process.terminate()
+    return nil
+}
+
+// Forward stderr verbatim, read the saved PNG path off stdout.
+let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+if !stderrData.isEmpty, let s = String(data: stderrData, encoding: .utf8) {
+    fputs(s, stderr)
+}
+guard process.terminationStatus == 0 else { return nil }
+let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+return String(data: stdoutData, encoding: .utf8)?
+    .trimmingCharacters(in: .whitespacesAndNewlines)`;
+
+const helperCode = `// Sources/ScreenshotHelper/main.swift (the whole file is 111 lines)
+// The first CGWindowListCreateImage call in a process lazy-loads ReplayKit.
+// ReplayKit never stops. Solution: exit right after the call.
+
+import Foundation
+import CoreGraphics
+import AppKit
+
+// Usage: screenshot-helper <windowID> <outputPath> [--click x,y --bounds x,y,w,h]
+let args = CommandLine.arguments
+guard args.count >= 3, let windowID = CGWindowID(args[1]) else { exit(1) }
+let outputPath = args[2]
+
+// --- This line is the whole reason this binary exists ---
+guard let image = CGWindowListCreateImage(
+    .null, .optionIncludingWindow, windowID,
+    [.boundsIgnoreFraming, .bestResolution]
+) else { exit(1) }
+// ReplayKit is now loaded in this process. When we exit, it dies with us.
+
+// Optional crosshair annotation at the click point, in image-local coords.
+// scaleX/scaleY compensate for backing-scale differences.
+// CoreGraphics drawing origin is bottom-left, screen origin is top-left,
+// so Y is flipped before drawing.
+
+let bitmapRep = NSBitmapImageRep(cgImage: finalImage)
+guard let pngData = bitmapRep.representation(using: .png, properties: [:])
+else { exit(1) }
+try pngData.write(to: URL(fileURLWithPath: outputPath))
+print(outputPath) // parent reads this off stdout
+exit(0)`;
+
+const inlineVersus = `// The shape other macOS MCP servers use.
+// captureAndReturn() is called over and over inside the same process.
+// ReplayKit loads on the first call and stays resident.
+
+func captureAndReturn(pid: pid_t, out: String) -> String? {
+    guard let winID = findBestWindow(for: pid) else { return nil }
+
+    // First call here lazy-loads ReplayKit into THIS process.
+    // Every subsequent call reuses the already-loaded framework.
+    // The background worker never stops. Parent CPU stays pinned.
+    guard let image = CGWindowListCreateImage(
+        .null, .optionIncludingWindow, winID,
+        [.boundsIgnoreFraming, .bestResolution]
+    ) else { return nil }
+
+    writePNG(image, to: out)
+    return out
+}
+
+// In a long-lived MCP server this path accumulates cost forever.
+// top -pid <server-pid> shows ~19% CPU usage in steady state.`;
+
+const subprocessVersus = `// macos-use. captureWindowScreenshot() spawns a child that dies after one image.
+// ReplayKit loads in the CHILD. The child exits. ReplayKit is reaped.
+// Parent CPU returns to idle between tool calls.
+
+func captureWindowScreenshot(pid: pid_t, outputPath: String,
+                             clickPoint: CGPoint? = nil) -> String? {
+    guard let winID = findBestWindow(for: pid) else { return nil }
+
+    let helper = sibling("screenshot-helper")
+    guard FileManager.default.fileExists(atPath: helper) else { return nil }
+
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: helper)
+    p.arguments = [String(winID), outputPath] + clickArgs(clickPoint)
+    let out = Pipe(); p.standardOutput = out
+    try? p.run()
+
+    // 5-second deadline. Helper hangs? We terminate() and return nil.
+    guard waitWithDeadline(p, 5.0) else { p.terminate(); return nil }
+    guard p.terminationStatus == 0 else { return nil }
+
+    return String(data: out.fileHandleForReading.readDataToEndOfFile(),
+                  encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }`;
 
 const terminalTranscript = [
-  { type: "command" as const, text: "# Mail is frontmost, PID 1247. A message contains a link." },
-  { type: "command" as const, text: "macos-use_click_and_traverse pid=1247 element='https://example.com'" },
-  { type: "output" as const, text: "log: click_and_traverse: activated app pid=1247" },
-  { type: "output" as const, text: "log: click_and_traverse: found 1 match(es). Clicking 'https://example.com' [AXLink] at center (412,598)" },
-  { type: "output" as const, text: "log: handler(CallTool): app switch detected! Original PID 1247 -> new frontmost PID 8892 (Google Chrome)" },
-  { type: "output" as const, text: "log: handler(CallTool): traversed new frontmost app Google Chrome (PID 8892): 247 elements" },
+  { type: "command" as const, text: "# After a click_and_traverse lands, the MCP server needs a screenshot." },
+  { type: "command" as const, text: "# Watch the subprocess lifecycle in the server's stderr log:" },
   { type: "output" as const, text: "log: captureWindowScreenshot: selected window 31704 (score=2073600)" },
-  { type: "success" as const, text: "status: success" },
-  { type: "success" as const, text: "pid: 1247" },
-  { type: "success" as const, text: "app: Mail" },
-  { type: "success" as const, text: "file: /tmp/macos-use/1744996800123_click_and_traverse.txt" },
-  { type: "success" as const, text: "screenshot: /tmp/macos-use/1744996800123_click_and_traverse.png" },
-  { type: "success" as const, text: "app_switch: Google Chrome (PID: 8892) is now frontmost" },
-  { type: "success" as const, text: "app_switch_elements: 247 total, 43 visible" },
+  { type: "output" as const, text: "log: captureWindowScreenshot: invoking subprocess with click=412.0,598.0 bounds=(0.0, 38.0, 1512.0, 982.0)" },
+  { type: "output" as const, text: "log: captureWindowScreenshot: launching screenshot-helper for window 31704..." },
+  { type: "output" as const, text: "log: captureWindowScreenshot: screenshot saved via subprocess to /tmp/macos-use/1744996800123_click_and_traverse.png" },
+  { type: "success" as const, text: "# The helper exited. ReplayKit died with it. The parent CPU is idle again." },
+  { type: "command" as const, text: "ps -ef | grep screenshot-helper  # run this right after a tool call" },
+  { type: "output" as const, text: "# (no rows: the helper is already gone)" },
+  { type: "command" as const, text: "ls -1 /tmp/macos-use/*.png | head -3" },
+  { type: "output" as const, text: "/tmp/macos-use/1744996800123_click_and_traverse.png" },
+  { type: "output" as const, text: "/tmp/macos-use/1744996803458_type_and_traverse.png" },
+  { type: "output" as const, text: "/tmp/macos-use/1744996807002_refresh_traversal.png" },
 ];
 
 export default function MacosUsePage() {
@@ -242,32 +330,31 @@ export default function MacosUsePage() {
                 Swift MCP server
               </span>
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
-                cross-app handoff
+                two-binary architecture
               </span>
               <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                frontmostApplication
+                ReplayKit isolation
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              Your Click Opened A Different App.{" "}
-              <GradientText>macos-use Noticed</GradientText> And Traversed It
-              Before The Tool Call Returned.
+              macos-use Ships A Second Binary Whose{" "}
+              <GradientText>Whole Purpose Is To Die</GradientText> After One
+              Screenshot
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Most macOS automation servers treat the target PID as a fixed
-              parameter. You send a click, you get back a diff for that PID, the
-              next tool call assumes the same PID is still in focus. That
-              assumption breaks the moment a click opens a browser, a save
-              sheet surfaces Finder, or a Cmd-Tab promotes a background app.
-              macos-use checks{" "}
-              <span className="font-mono text-sm">
-                NSWorkspace.shared.frontmostApplication
-              </span>{" "}
-              after every diff-producing action, and if the PID is not the one
-              you asked for, it re-runs the accessibility traversal on the new
-              frontmost app and attaches both trees to the same MCP response.
-              The block is 25 lines of Swift in{" "}
-              <span className="font-mono text-sm">main.swift:1786-1809</span>.
+              CGWindowListCreateImage is not free. The first call in any
+              process lazy-loads ReplayKit, and ReplayKit spawns a background
+              worker that does not stop. In a short CLI that runs for 40ms
+              nobody notices. In a long-lived MCP server that sits in Claude
+              Desktop&apos;s menu bar for hours, top shows{" "}
+              <span className="font-mono text-sm">~19% CPU</span> forever. The
+              fix is architectural, not tuned: macos-use declares a second{" "}
+              <span className="font-mono text-sm">.executableTarget</span> in{" "}
+              <span className="font-mono text-sm">Package.swift</span>, hands
+              every capture request to that subprocess via{" "}
+              <span className="font-mono text-sm">Process()</span> with a
+              5-second deadline, reads the saved PNG path off stdout, and lets
+              the helper die. ReplayKit goes with it.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
@@ -275,14 +362,14 @@ export default function MacosUsePage() {
               readingTime="9 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1786">
-                Read the detection block on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift">
+                Read ScreenshotHelper/main.swift on GitHub
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1030"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L378"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Open flat-text writer at main.swift:1030
+                Open captureWindowScreenshot at main.swift:378
               </a>
             </div>
           </div>
@@ -293,164 +380,150 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Detection fires inside the same MCP tool call, not in a separate call",
-            "New frontmost app's accessibility tree is attached to the same response",
-            "Screenshot PID follows the app switch, not the caller's original PID",
+            "Two executableTarget declarations in Package.swift (main server + screenshot-helper)",
+            "Every capture runs in a child process with a 5-second watchdog at main.swift:485-489",
+            "ReplayKit CPU leak is contained to the subprocess lifetime, not the server lifetime",
           ]}
         />
 
         {/* Remotion hero clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="One click. Two apps. One response."
-            subtitle="Cross-app handoff detection inside a single MCP round-trip"
+            title="One screenshot. One subprocess. One death."
+            subtitle="How macos-use keeps its MCP server out of the ReplayKit CPU trap"
             captions={[
-              "Click on a link in Mail, the PID 1247 that started the call",
-              "Chrome becomes frontmost, new PID 8892, different AX tree",
-              "macos-use notices the PID drift and traverses the new app",
-              "Response carries Mail's diff AND Chrome's full tree, one file",
-              "Screenshot is of Chrome, where the click visibly landed",
+              "CGWindowListCreateImage lazy-loads ReplayKit the first time it's called",
+              "ReplayKit spawns a worker that never stops, ~19% CPU forever",
+              "macos-use moves that one call into a sibling binary, screenshot-helper",
+              "Main server spawns the helper, waits 5 seconds max, reads the PNG path",
+              "Helper exits. ReplayKit dies with it. Parent CPU returns to idle.",
             ]}
             accent="teal"
           />
         </section>
 
-        {/* The SERP gap */}
+        {/* SERP gap */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The One Failure Mode None Of The Competing MCPs Describe
+            The Architectural Detail Every Competing macOS MCP Skips
           </h2>
           <p className="text-zinc-600 mb-4">
             Search the keyword{" "}
             <span className="font-mono text-sm">macos-use</span> and read the
-            top results: the GitHub READMEs for steipete/macos-automator-mcp,
+            top results. The GitHub READMEs for steipete/macos-automator-mcp,
             ashwwwin/automation-mcp, CursorTouch/MacOS-MCP, digithree/automac-mcp,
-            mb-dev/macos-ui-automation-mcp, and several blog walkthroughs. Every
-            one of them describes the tool surface (click, type, press, launch
-            app) and the accessibility-tree payload. Not one of them addresses
-            the question of what happens when the action you just performed
-            pushes a different app to the front.
+            and mb-dev/macos-ui-automation-mcp each describe a list of tools:
+            click, type, press, launch an app, capture the screen. Not one of
+            them discusses the lifetime of the framework that backs the capture
+            call, which matters because CGWindowListCreateImage pulls ReplayKit
+            in as a side effect, and ReplayKit does not respect the caller&apos;s
+            idea of a one-shot.
           </p>
           <p className="text-zinc-600 mb-4">
-            This is not a rare edge case. It is the default for: clicking a link
-            in Mail, Messages, Slack, or Discord. Pressing Cmd-Tab at any
-            point. Running a keyboard shortcut that triggers Spotlight or a
-            global menu extra. Opening any file from Finder. Sending an email
-            that closes the composer and returns focus to the inbox. Any save
-            sheet that surfaces Finder. Any authentication flow that redirects
-            to a browser.
+            If you deliver macOS automation through a long-running MCP server,
+            and your users are running a model that fires a tool every few
+            seconds for an hour, the ReplayKit worker accumulates its own CPU
+            bill across every call. Battery-powered laptops heat up. Fans kick
+            on. The user blames the model. The only way to drop that cost to
+            zero between tool calls is to put the capture in a process you can
+            actually kill, and the only way to ship that reliably is to have a
+            second binary next to your main one.
           </p>
           <p className="text-zinc-600">
-            Without handoff detection, the model&apos;s next tool call uses the
-            original PID, lands on a background window, and the agent gets
-            silently confused. The failure mode is invisible in the tool
-            response because the response looks normal; the diff just happens to
-            describe the wrong app.
+            macos-use does exactly that. Its{" "}
+            <span className="font-mono text-sm">Package.swift</span> is the
+            shortest proof: two{" "}
+            <span className="font-mono text-sm">.executableTarget</span> entries,
+            one called{" "}
+            <span className="font-mono text-sm">mcp-server-macos-use</span>, the
+            other called{" "}
+            <span className="font-mono text-sm">screenshot-helper</span>. No
+            other macOS MCP I found has a second target.
           </p>
         </section>
 
-        {/* ComparisonTable with competitors */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            What Each macOS MCP Reports When A Click Opens A Different App
+        {/* AnimatedBeam , the shape of the data flow */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            What Crosses The Subprocess Boundary
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            Behavior observed by running the same click flow (click a link in
-            Mail, read the tool response) against each server&apos;s public
-            release. The column headers are the named MCP projects on GitHub;
-            rows are what the model reads after the click.
+            Three inputs go into{" "}
+            <span className="font-mono text-sm">screenshot-helper</span>: the
+            window ID chosen by the intersection scorer, the output path under{" "}
+            <span className="font-mono text-sm">/tmp/macos-use/</span>, and
+            optional click annotation data. Two outputs come back: the saved
+            PNG path on stdout and any diagnostic logs on stderr, forwarded
+            verbatim into the parent&apos;s log stream.
           </p>
-          <ComparisonTable
-            productName="macos-use"
-            competitorName="Other macOS MCP servers"
-            rows={[
-              {
-                feature: "Detects PID drift after the action",
-                ours: "Yes, inside the same tool call",
-                competitor: "No, the target PID is fixed per call",
-              },
-              {
-                feature: "Auto-traverses the new frontmost app",
-                ours: "Yes, under app_switch_traversal",
-                competitor: "No, requires a separate tool call",
-              },
-              {
-                feature: "Summary line names the new app and PID",
-                ours: "app_switch: <Name> (PID: N) is now frontmost",
-                competitor: "Not present; model has to infer from errors",
-              },
-              {
-                feature: "Screenshot follows the new frontmost PID",
-                ours: "Yes, appSwitchPid is first in the fallback chain",
-                competitor: "Screenshot is of the original PID's window",
-              },
-              {
-                feature: "Graceful degradation when AX is denied",
-                ours: "Keeps the name and PID, drops the tree",
-                competitor: "N/A, the feature does not exist",
-              },
-              {
-                feature: "Works for composed click+type+press chains",
-                ours: "Detection runs after the whole chain, not between",
-                competitor: "N/A",
-              },
+          <AnimatedBeam
+            title="argv in, stdout PNG path out, ReplayKit stays boxed inside"
+            from={[
+              { label: "CGWindowID (from intersection scoring)" },
+              { label: "outputPath (/tmp/macos-use/*.png)" },
+              { label: "--click x,y + --bounds x,y,w,h" },
+            ]}
+            hub={{ label: "screenshot-helper subprocess (lives ~200-500ms)" }}
+            to={[
+              { label: "PNG file written to disk" },
+              { label: "output path on stdout" },
+              { label: "diagnostics on stderr (forwarded)" },
+              { label: "ReplayKit dies with exit(0)" },
             ]}
           />
         </section>
 
-        {/* The detection code */}
+        {/* The Package.swift code */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
-              Anchor code
+              Anchor code 1 of 3
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The 25 Lines That Catch The App Switch
+              Two Executables, One Package Manifest
             </h2>
             <p className="text-zinc-600 mb-6">
-              One condition, one NSWorkspace read, one conditional traversal.
-              Delete this block in a local fork and every cross-app workflow
-              regresses to needing a manual refresh_traversal on the new PID.
+              Every macOS MCP I checked declares a single executable target.
+              macos-use declares two. The reason is one line of comment below:
+              ReplayKit is loaded as a side effect of the capture call and
+              cannot be unloaded in-process.
             </p>
             <AnimatedCodeBlock
-              code={detectionCode}
+              code={packageCode}
               language="swift"
-              filename="Sources/MCPServer/main.swift"
+              filename="Package.swift"
             />
             <p className="text-zinc-500 text-sm mt-4">
-              The hasDiff gate on line 1788 means refresh_traversal skips the
-              check. That is intentional: refresh has no action to react to,
-              and running the NSWorkspace query on every refresh would add work
-              for nothing. click, type, press, scroll all carry hasDiff = true.
+              Build both with{" "}
+              <span className="font-mono text-sm">swift build -c release</span>
+              . Both land in{" "}
+              <span className="font-mono text-sm">.build/release/</span>. The
+              main server finds the helper by walking up from{" "}
+              <span className="font-mono text-sm">CommandLine.arguments[0]</span>
+              , so they only have to be siblings on disk.
             </p>
           </div>
         </section>
 
-        {/* AnimatedBeam , where the data goes */}
+        {/* CodeComparison , inline vs subprocess */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Flows Into The Handoff Detector, What Flows Out
+            Inline Capture Versus Subprocess Capture
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            Three inputs converge on the detector; four separate fields of the
-            outbound ToolResponse are written when a switch fires. The compact
-            summary, the flat text file, and the screenshot path all read from
-            those fields.
+            Left: the in-process pattern every other macOS MCP ships. Right:
+            what macos-use does instead. The right side is longer by about a
+            dozen lines, but the right side&apos;s steady-state CPU cost is
+            zero between tool calls. The left side&apos;s is not.
           </p>
-          <AnimatedBeam
-            title="PIDs in, enriched multi-app response out"
-            from={[
-              { label: "options.pidForTraversal (original)" },
-              { label: "NSWorkspace frontmostApplication.pid" },
-              { label: "hasDiff flag from the tool switch" },
-            ]}
-            hub={{ label: "cross-app handoff detector" }}
-            to={[
-              { label: "toolResponse.appSwitchPid" },
-              { label: "toolResponse.appSwitchAppName" },
-              { label: "toolResponse.appSwitchTraversal" },
-              { label: "screenshotPid fallback chain" },
-            ]}
+          <CodeComparison
+            leftCode={inlineVersus}
+            rightCode={subprocessVersus}
+            leftLines={19}
+            rightLines={22}
+            leftLabel="Typical in-process capture"
+            rightLabel="macos-use subprocess capture"
+            title="The same API surface, two very different CPU curves"
           />
         </section>
 
@@ -458,76 +531,81 @@ export default function MacosUsePage() {
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              One Click, Two Apps, One Tool Response: The Sequence
+              The Full Round-Trip Of A Single Screenshot
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              From the MCP client&apos;s click_and_traverse request to the
-              single response that describes two applications. Note that the
-              handoff detector runs on the MainActor after restore-cursor and
-              restore-frontmost have already tried to normalize focus.
+              Five actors. Five messages. The most expensive call on the
+              whole path (CGWindowListCreateImage) never enters the MCP
+              server&apos;s process.
             </p>
             <SequenceDiagram
-              title="click_and_traverse with a cross-app handoff"
+              title="click_and_traverse ending in a PNG the model can read"
               actors={[
                 "MCP client",
-                "CallTool handler",
-                "MacosUseSDK",
-                "NSWorkspace",
-                "Accessibility APIs",
+                "MCP server",
+                "screenshot-helper",
+                "CGWindowList",
+                "ReplayKit",
               ]}
               messages={[
                 {
                   from: 0,
                   to: 1,
-                  label: "click_and_traverse pid=1247, link coords",
+                  label: "click_and_traverse pid=1247, coords",
                   type: "request",
+                },
+                {
+                  from: 1,
+                  to: 1,
+                  label: "intersection-score windows of PID 1247",
+                  type: "event",
                 },
                 {
                   from: 1,
                   to: 2,
-                  label: "performAction(click, options)",
+                  label: "Process().run() argv: [winID, outPath, --click, --bounds]",
                   type: "request",
                 },
                 {
                   from: 2,
-                  to: 4,
-                  label: "CGEvent.post + AX traversal of PID 1247",
-                  type: "event",
-                },
-                {
-                  from: 1,
-                  to: 1,
-                  label: "buildToolResponse(diff of Mail)",
-                  type: "event",
-                },
-                {
-                  from: 1,
                   to: 3,
-                  label: "frontmostApplication?.processIdentifier",
+                  label: "CGWindowListCreateImage(.optionIncludingWindow, winID)",
                   type: "request",
                 },
                 {
                   from: 3,
-                  to: 1,
-                  label: "PID 8892 (Google Chrome)",
-                  type: "response",
-                },
-                {
-                  from: 1,
                   to: 4,
-                  label: "traverseAccessibilityTree(8892) on MainActor",
-                  type: "request",
+                  label: "lazy-load ReplayKit (side effect, inside the helper)",
+                  type: "event",
                 },
                 {
-                  from: 4,
-                  to: 1,
-                  label: "ResponseData for Chrome (247 elements)",
+                  from: 3,
+                  to: 2,
+                  label: "CGImage",
                   type: "response",
+                },
+                {
+                  from: 2,
+                  to: 2,
+                  label: "draw crosshair, write PNG, print path to stdout",
+                  type: "event",
+                },
+                {
+                  from: 2,
+                  to: 1,
+                  label: "stdout: /tmp/macos-use/<ts>_click_and_traverse.png",
+                  type: "response",
+                },
+                {
+                  from: 2,
+                  to: 4,
+                  label: "exit(0): ReplayKit dies with the subprocess",
+                  type: "event",
                 },
                 {
                   from: 1,
                   to: 0,
-                  label: "one response: Mail diff + Chrome tree + Chrome PNG",
+                  label: "MCP response with screenshot path + traversal",
                   type: "response",
                 },
               ]}
@@ -535,272 +613,265 @@ export default function MacosUsePage() {
           </div>
         </section>
 
-        {/* Terminal output */}
+        {/* The launch code */}
         <section className="max-w-4xl mx-auto px-6 py-16">
+          <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
+            Anchor code 2 of 3
+          </span>
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What The Log And Summary Actually Say
+            How The Parent Launches, Waits, And Reads
           </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Every log line below is emitted verbatim by the server. The log
-            tokens &quot;app switch detected!&quot; and &quot;app_switch:&quot;
-            are literal strings you can grep for. The summary lines
-            app_switch and app_switch_elements always appear in that order
-            when a switch fires.
+          <p className="text-zinc-600 mb-6">
+            Three Swift idioms you can read at a glance:{" "}
+            <span className="font-mono text-sm">Process()</span> for the spawn,{" "}
+            <span className="font-mono text-sm">DispatchGroup</span> plus a
+            timeout for the 5-second watchdog, and a pipe read for the result.
+            No shared memory. No IPC beyond argv plus stdout.
           </p>
-          <TerminalOutput
-            title="mcp-server-macos-use (stderr + MCP response)"
-            lines={terminalTranscript}
+          <AnimatedCodeBlock
+            code={launchCode}
+            language="swift"
+            filename="Sources/MCPServer/main.swift"
           />
         </section>
 
-        {/* Flat text code */}
+        {/* Terminal output , see it run */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Where The New App Shows Up In The Flat Text Response
+              What You See In The Log While The Helper Is Alive
             </h2>
-            <p className="text-zinc-600 mb-6 max-w-2xl">
-              MCP responses for macos-use are written to{" "}
-              <span className="font-mono text-sm">/tmp/macos-use/</span> as flat
-              text files; the tool call itself returns a compact summary with a
-              file path. When a handoff fires, the new app&apos;s tree lives
-              below a single header line you can grep for.
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              Every log line below is a literal string emitted by the server.
+              The four &quot;captureWindowScreenshot&quot; lines always appear
+              in this order around a successful capture: window selection,
+              argument construction, spawn, success.
             </p>
-            <AnimatedCodeBlock
-              code={flatTextCode}
-              language="swift"
-              filename="Sources/MCPServer/main.swift"
+            <TerminalOutput
+              title="mcp-server-macos-use (stderr during one tool call)"
+              lines={terminalTranscript}
             />
-            <p className="text-zinc-500 text-sm mt-4">
-              The header format{" "}
-              <span className="font-mono text-sm">
-                # app_switch: &lt;Name&gt; (PID: N)
-              </span>{" "}
-              is fixed, so a model can jump straight to it with{" "}
-              <span className="font-mono text-sm">
-                grep -n &apos;app_switch:&apos;
-              </span>{" "}
-              and continue reading line-by-line.
-            </p>
           </div>
         </section>
 
-        {/* Metrics */}
+        {/* Helper source */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
+            Anchor code 3 of 3
+          </span>
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Helper Itself Is 111 Lines, And Most Of Them Are Crosshair Math
+          </h2>
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            The entire capture logic fits on one screen. The line that loads
+            ReplayKit is called exactly once per process invocation, and the
+            process invocation is disposable by construction.
+          </p>
+          <AnimatedCodeBlock
+            code={helperCode}
+            language="swift"
+            filename="Sources/ScreenshotHelper/main.swift"
+          />
+          <p className="text-zinc-500 text-sm mt-4">
+            The actual file includes the red crosshair drawing between the
+            capture and the PNG write; I trimmed that block here because the
+            point is the lifecycle, not the annotation geometry. Read the full
+            file on GitHub for the coordinate transforms.
+          </p>
+        </section>
+
+        {/* ProofBanner , quote from the source */}
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <ProofBanner
+            quote="Runs in a subprocess so that ReplayKit (loaded as a side-effect of CGWindowListCreateImage) dies with the process instead of spinning forever in the parent MCP server."
+            source="doc comment at Sources/ScreenshotHelper/main.swift:1-4"
+            metric="~19%"
+          />
+        </section>
+
+        {/* Metrics row */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            Numbers You Can Grep In The Current Commit
+            Numbers You Can Verify In The Current Commit
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            Every number below is a literal line reference from{" "}
-            <span className="font-mono text-sm">
-              Sources/MCPServer/main.swift
-            </span>{" "}
-            at HEAD. Clone the repo, open the file, jump to the line, the code
-            matches.
+            Every number below is either a line reference in{" "}
+            <span className="font-mono text-sm">Sources/MCPServer/main.swift</span>{" "}
+            at HEAD or a direct count from{" "}
+            <span className="font-mono text-sm">Package.swift</span>. Clone the
+            repo, open the file, the code matches.
           </p>
           <MetricsRow
             metrics={[
-              { value: 25, label: "lines in the cross-app handoff detection block" },
-              { value: 4, label: "ToolResponse fields mutated when a switch fires" },
-              { value: 1, label: "NSWorkspace read per diff-producing tool call" },
-              { value: 2, label: "apps described by a single MCP response" },
+              { value: 2, label: "executableTarget declarations in Package.swift" },
+              { value: 111, label: "total lines in ScreenshotHelper/main.swift" },
+              { value: 5, suffix: "s", label: "subprocess deadline before terminate()" },
+              { value: 1, label: "CGWindowListCreateImage call per subprocess" },
             ]}
           />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
             <GlowCard>
               <div className="p-6">
                 <div className="text-4xl font-bold text-zinc-900">
-                  <NumberTicker value={1786} />
+                  <NumberTicker value={378} />
                 </div>
                 <div className="text-sm text-zinc-500 mt-2">
-                  first line of the detection block
+                  first line of captureWindowScreenshot
                 </div>
               </div>
             </GlowCard>
             <GlowCard>
               <div className="p-6">
                 <div className="text-4xl font-bold text-zinc-900">
-                  <NumberTicker value={1789} />
+                  <NumberTicker value={459} />
                 </div>
                 <div className="text-sm text-zinc-500 mt-2">
-                  line that reads frontmostApplication.pid
+                  line that instantiates Process()
                 </div>
               </div>
             </GlowCard>
             <GlowCard>
               <div className="p-6">
                 <div className="text-4xl font-bold text-zinc-900">
-                  <NumberTicker value={1799} />
+                  <NumberTicker value={485} />
                 </div>
                 <div className="text-sm text-zinc-500 mt-2">
-                  line calling traverseAccessibilityTree on new PID
+                  DispatchGroup.wait timeout check
                 </div>
               </div>
             </GlowCard>
             <GlowCard>
               <div className="p-6">
                 <div className="text-4xl font-bold text-zinc-900">
-                  <NumberTicker value={1837} />
+                  <NumberTicker value={506} />
                 </div>
                 <div className="text-sm text-zinc-500 mt-2">
-                  line where screenshotPid follows the switch
+                  line returning the saved PNG path
                 </div>
               </div>
             </GlowCard>
           </div>
         </section>
 
-        {/* StepTimeline , the full path */}
+        {/* StepTimeline , seven stages */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Seven Stages From Click To A Response That Describes Two Apps
+              Seven Stages From Tool Call To PNG On Disk
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              Each stage maps to a specific line range in main.swift. The
-              handoff detector is stage five; everything before and after is
-              the same path the single-app case walks.
+              Each stage maps to a specific line range. The subprocess is
+              stage four; everything before it happens in the main server,
+              and everything after it happens in the helper.
             </p>
             <StepTimeline
               steps={[
                 {
-                  title: "Click posts a CGEvent against the original PID",
+                  title: "CGWindowList is filtered by PID and layer == 0",
                   description:
-                    "main.swift:1597-1601. performAction with primaryAction = .click receives the adjusted point (post scrollIntoViewIfNeeded) and posts the event. The tool has no idea yet whether this click will cause a focus change.",
+                    "main.swift:388-407 reads CGWindowListCopyWindowInfo with .optionOnScreenOnly plus .excludeDesktopElements, then filters to windows whose kCGWindowOwnerPID matches the target and whose kCGWindowLayer equals 0 (normal app windows, not menu extras or widgets).",
                 },
                 {
-                  title: "Additional actions, if composed",
+                  title: "Intersection scoring picks the right window",
                   description:
-                    "main.swift:1710-1751. If click was chained with text and/or pressKey (click_and_traverse supports both), each additional action runs, cancellation is checked between steps via InputGuard.throwIfCancelled(), and a final traversal captures the combined state. Detection happens AFTER the whole chain, not between steps.",
+                    "main.swift:412-424 computes score = intersection(traversalWindowBounds, window).area and keeps the max. If no traversal bounds are available, fall back to window.area. The winning CGWindowID is logged to stderr with its score.",
                 },
                 {
-                  title: "Cursor and frontmost-app restore attempt",
+                  title: "Helper path is resolved relative to the server binary",
                   description:
-                    "main.swift:1767-1781. The cursor returns to savedCursorPos via a synthetic mouseMoved event, and if savedFrontmostApp is still alive and not already frontmost, it gets activated. This runs BEFORE detection, so if the user's intent was 'click and stay on the new app', the detection still sees the new app because it reads NSWorkspace AFTER the action but BEFORE the restore can kick focus back.",
+                    "main.swift:436-438 sets helperPath = dirname(CommandLine.arguments[0]) + '/screenshot-helper'. main.swift:440-443 bails cleanly if the sibling binary is missing instead of crashing the server.",
                 },
                 {
-                  title: "buildToolResponse builds the diff for the original PID",
+                  title: "argv is assembled: windowID, outputPath, optional --click and --bounds",
                   description:
-                    "main.swift:1784. ToolResponse carries the primaryActionError, traversalError, windowBounds, diff (or traversal), and sheet detection flag. appSwitchPid is nil at this point.",
+                    "main.swift:445-454. The click point is in screen coordinates; the bounds describe the chosen window's position so the helper can translate screen coordinates into image-local coordinates.",
                 },
                 {
-                  title: "Handoff detector reads NSWorkspace and compares PIDs",
+                  title: "Process() spawns the helper with piped stdout and stderr",
                   description:
-                    "main.swift:1786-1809. The only branch the page is about. If the current frontmost PID differs from originalPid, appSwitchPid and appSwitchAppName are set, and traverseAccessibilityTree is called on the new PID inside a @MainActor Task.",
+                    "main.swift:459-469. Pipes are created for both streams so the helper's stderr can be forwarded verbatim and its stdout (the saved PNG path) can be read cleanly after exit.",
                 },
                 {
-                  title: "Flat text file is written with both apps under separate headers",
+                  title: "5-second DispatchGroup watchdog enforces a deadline",
                   description:
-                    "main.swift:1829. buildFlatTextResponse composes: # diff/# traversal header for the original PID, then if appSwitchTraversal is non-nil, a blank line and # app_switch: <Name> (PID: N) header followed by every element of the new PID.",
+                    "main.swift:475-489. waitUntilExit() runs on a background queue inside DispatchGroup, and group.wait(timeout:) enforces the 5-second limit. If the helper hangs, process.terminate() is called and the parent returns nil.",
                 },
                 {
-                  title: "Screenshot is captured against the new frontmost PID",
+                  title: "stdout is parsed, stderr is forwarded, helper exits, ReplayKit dies",
                   description:
-                    "main.swift:1837-1840. The ?? chain prioritizes appSwitchPid over traversalPid over options.pidForTraversal. captureWindowScreenshot picks the right window via intersection scoring (see the separate guide on that), draws the click crosshair in the new window's coordinate space, and writes the PNG.",
+                    "main.swift:491-510. stderr data is printed verbatim into the server's log, stdout is trimmed and returned as the saved PNG path. The helper process is already gone by the time this runs; the ReplayKit worker went with it.",
                 },
               ]}
             />
           </div>
         </section>
 
-        {/* Screenshot PID code */}
+        {/* BentoGrid , why the design choice matters */}
         <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Screenshot Follows The Switch, Via A ?? Fallback Chain
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            What Breaks If You Collapse The Two Binaries Into One
           </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            One line decides which PID the PNG is of. The fallback order is:
-            new app if a switch happened, otherwise the tool&apos;s original
-            traversal PID, otherwise the pid argument. If a click opens Chrome,
-            the screenshot is of Chrome; the click crosshair lands in
-            Chrome&apos;s coordinate space, not Mail&apos;s.
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            None of these are theoretical. Each is a direct consequence of the
+            ReplayKit worker staying resident inside a long-lived server
+            process that takes screenshots on every diff-producing tool call.
           </p>
-          <AnimatedCodeBlock
-            code={screenshotPidCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
+          <BentoGrid
+            cards={[
+              {
+                title: "Battery drain on laptops running a local MCP server",
+                description:
+                  "~19% sustained CPU on a single core translates to a measurable hit on battery life. An idle Claude Desktop session should cost nothing. With in-process capture, every screenshot adds to a floor that never returns to zero.",
+                size: "2x1",
+              },
+              {
+                title: "Fans kick on mid-session",
+                description:
+                  "Apple silicon laptops are silent below roughly 20% sustained CPU. The ReplayKit worker sits right at that threshold, so agent sessions audibly change the laptop's thermal profile.",
+                size: "1x1",
+              },
+              {
+                title: "Model blamed for server cost",
+                description:
+                  "Developers notice their machine getting hot while the model is 'thinking'. The CPU is the MCP server, not the model. Attribution bug.",
+                size: "1x1",
+              },
+              {
+                title: "Framework memory is not reclaimed between tool calls",
+                description:
+                  "ReplayKit holds Metal resources, audio capture session scaffolding, and a background queue. None of that unloads. Every subsequent capture reuses it; the memory baseline of the server rises.",
+                size: "1x1",
+              },
+              {
+                title: "No backpressure for a hung capture",
+                description:
+                  "In-process, a stuck capture freezes the whole server. In subprocess, main.swift:485-489 enforces a 5-second deadline per capture; the parent stays responsive to MCP traffic even if one call goes bad.",
+                size: "2x1",
+              },
+            ]}
           />
         </section>
 
-        {/* Proof banner , anchor quote */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <ProofBanner
-            quote="app switch detected! Original PID 1247 -> new frontmost PID 8892 (Google Chrome)"
-            source="stderr log line, main.swift:1792"
-            metric="25"
-          />
-        </section>
-
-        {/* Bento , scenarios */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              Concrete Scenarios Where The Detection Saves You
-            </h2>
-            <p className="text-zinc-600 mb-8 max-w-2xl">
-              Each of these is a real cross-app handoff the detector catches
-              without a special case. Every one of them silently strands a
-              naive automation tool on the old PID.
-            </p>
-            <BentoGrid
-              cards={[
-                {
-                  title: "Click a link inside Mail or Messages",
-                  description:
-                    "The default browser takes focus. The original tool was driving PID 1247 (Mail); the response now describes PID 8892 (Chrome) under app_switch, and the next tool call can target Chrome directly without asking first.",
-                  size: "2x1",
-                },
-                {
-                  title: "Cmd-Tab, Cmd-backtick, or global hotkey",
-                  description:
-                    "press_key_and_traverse with keyName='Tab' modifierFlags=['Command'] promotes whatever the previous app was. The app_switch header names it, the tree describes it, the screenshot shows it.",
-                  size: "1x1",
-                },
-                {
-                  title: "Save sheet that exposes Finder",
-                  description:
-                    "Some apps route save sheets through a Finder UI that briefly takes focus. The switch gets captured; the agent can drive Finder without a manual refresh.",
-                  size: "1x1",
-                },
-                {
-                  title: "OAuth redirect to a browser",
-                  description:
-                    "Click Sign in with Google in a native app, a browser window pops to the front. app_switch carries the browser's PID and all of its form fields.",
-                  size: "1x1",
-                },
-                {
-                  title: "Terminal spawning a GUI editor",
-                  description:
-                    "Run code . or open -a Xcode in Terminal. The editor launches and steals focus. The next traversal is of the editor, not Terminal.",
-                  size: "2x1",
-                },
-              ]}
-            />
-          </div>
-        </section>
-
-        {/* Marquee , trust strip */}
+        {/* Marquee , the 19% trust strip */}
         <section className="py-12 border-y border-zinc-200">
           <div className="max-w-5xl mx-auto px-6">
             <p className="text-center text-zinc-500 text-sm mb-6 uppercase tracking-wide">
-              Common cross-app handoff triggers the detector catches
+              Things the subprocess isolation contains so your parent process does not have to
             </p>
             <Marquee speed={45} fade pauseOnHover>
               {[
-                "link click in Mail",
-                "link click in Messages",
-                "Cmd-Tab",
-                "Cmd-backtick",
-                "Spotlight invocation",
-                "save sheet surfacing Finder",
-                "open file in Finder",
-                "OAuth redirect to browser",
-                "SSO prompt to 1Password",
-                "tel:// or mailto:// link",
-                "calendar invite .ics open",
-                "Xcode open -a",
-                "code . from Terminal",
-                "Messages reply from a notification",
+                "ReplayKit background worker",
+                "~19% sustained CPU floor",
+                "lazy-loaded Metal resources",
+                "framework memory baseline",
+                "capture API hang risk",
+                "fan noise on Apple silicon",
+                "battery drain during idle",
+                "stuck CGWindowListCreateImage calls",
+                "per-call Retina scaling work",
+                "NSBitmapImageRep allocation",
+                "CoreGraphics context for crosshair",
+                "PNG encode pass",
               ].map((s) => (
                 <span
                   key={s}
@@ -813,37 +884,37 @@ export default function MacosUsePage() {
           </div>
         </section>
 
-        {/* Checklist */}
+        {/* Checklist , guarantees */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <AnimatedChecklist
-            title="What the detection guarantees, line by line"
+            title="What the two-binary design guarantees"
             items={[
               {
-                text: "The compact summary names the new frontmost app and PID so the model sees it before reading the file",
+                text: "The capture call lives in a process whose entire reason for existing is to exit immediately after it returns",
                 checked: true,
               },
               {
-                text: "The flat text file contains a greppable # app_switch: header followed by the new app's complete accessibility tree",
+                text: "ReplayKit is loaded inside the helper, never inside the MCP server",
                 checked: true,
               },
               {
-                text: "The screenshot PNG is of the new app; the click crosshair is drawn in the new window's coordinate space",
+                text: "A hung or crashed helper never takes the MCP server with it (5-second watchdog + piped stderr)",
                 checked: true,
               },
               {
-                text: "Composed click+type+press chains fire the detection once, after the full chain, not between steps",
+                text: "The parent reports which window was captured, with the intersection-scoring value, in stderr before the subprocess launches",
                 checked: true,
               },
               {
-                text: "If the new app denies accessibility or errors on traversal, the PID and name are still reported so the caller learns about the switch",
+                text: "Retina scaling is handled inside the helper; the crosshair annotation lands in the right pixel regardless of backing scale",
                 checked: true,
               },
               {
-                text: "refresh_traversal does not run the detection (hasDiff == false), because it has no action to react to",
+                text: "If the helper binary is missing, the server returns cleanly without a screenshot instead of crashing",
                 checked: true,
               },
               {
-                text: "The detection uses NSWorkspace, not CGWindowList ordering, so it is robust against z-order quirks",
+                text: "Only one CGWindowListCreateImage call runs per helper invocation; the process is never reused",
                 checked: true,
               },
             ]}
@@ -854,12 +925,17 @@ export default function MacosUsePage() {
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Try It Locally In Under Two Minutes
+              Build Both Binaries And See The CPU Curve For Yourself
             </h2>
             <p className="text-zinc-600 mb-6 max-w-2xl">
-              You need macOS, Xcode, and any MCP-compatible client (Claude
-              Desktop, Cursor, Cline). Open Mail before starting; the click on
-              a link is the shortest reproducible trigger.
+              One{" "}
+              <span className="font-mono text-sm">swift build</span> produces
+              both binaries into{" "}
+              <span className="font-mono text-sm">.build/release/</span>. Open
+              Activity Monitor, run any click_and_traverse tool call, and
+              watch the CPU of the main server: it spikes for the capture,
+              then falls immediately back to idle. There is no floor to
+              accumulate.
             </p>
             <div className="rounded-2xl border border-teal-200 bg-white p-6 font-mono text-sm text-zinc-800 leading-relaxed overflow-x-auto">
               git clone https://github.com/mediar-ai/mcp-server-macos-use
@@ -870,17 +946,18 @@ export default function MacosUsePage() {
               -c release
               <br />
               <br />
-              # Then add ./.build/release/mcp-server-macos-use to
+              ls -1 .build/release/mcp-server-macos-use .build/release/screenshot-helper
               <br />
-              # claude_desktop_config.json under mcpServers.
               <br />
-              # Restart Claude Desktop and ask it to open Mail,
+              # Point Claude Desktop at .build/release/mcp-server-macos-use
               <br />
-              # click any link, and describe the resulting page.
+              # The main server will locate screenshot-helper via sibling
               <br />
-              # The log lines print to Claude Desktop&apos;s MCP log viewer;
+              # path resolution, so both binaries must stay in the same
               <br />
-              # grep for &quot;app switch detected&quot;.
+              # directory. Restart Claude Desktop, run any click flow, and
+              <br />
+              # watch stderr in the Claude Desktop MCP log viewer.
             </div>
           </div>
         </section>
@@ -896,8 +973,8 @@ export default function MacosUsePage() {
         {/* CTA */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <InlineCta
-            heading="Read The Rest Of The Code"
-            body="The cross-app handoff detector is one of six multi-app edge cases macos-use handles by default. The repo is MIT-licensed Swift; every line referenced on this page is stable at HEAD."
+            heading="Read The Rest Of The Source"
+            body="The two-binary architecture is one of several macOS-specific design choices baked into this server. The repo is MIT-licensed Swift; every line number on this page is stable at HEAD."
             linkText="Open the repo on GitHub"
             href="https://github.com/mediar-ai/mcp-server-macos-use"
           />
