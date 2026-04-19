@@ -14,7 +14,6 @@ import {
   AnimatedCodeBlock,
   TerminalOutput,
   StepTimeline,
-  HorizontalStepper,
   FlowDiagram,
   SequenceDiagram,
   AnimatedChecklist,
@@ -36,9 +35,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: Why The Swift MCP Server Ships Two Binaries To Screenshot One Window";
+  "macos-use: The Accessibility Diff You See Is Not The One macOS Emits";
 const DESCRIPTION =
-  "macos-use is a Swift MCP server for driving macOS apps via accessibility APIs. The non-obvious part: it ships two executables, not one. CGWindowListCreateImage silently loads ReplayKit, which then spins at ~19% CPU inside whatever process first touched it, forever. The fix is to screenshot from a subprocess and let ReplayKit die with it. Walk through Package.swift, Sources/ScreenshotHelper/main.swift, and captureWindowScreenshot at main.swift:378-511.";
+  "macos-use does not hand the raw accessibility tree diff to the model. Before the MCP response leaves the server, a filter pipeline drops coordinate-only changes, scroll-bar subcomponents, and empty structural containers, then back-fills text onto AXRow and AXCell via a two-strategy proximity search. A click that reflows fifty elements arrives as a handful of semantic events. The rules live in Sources/MCPServer/main.swift lines 592 through 718.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -52,9 +51,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: the two-binary trick that keeps the MCP server's CPU clean",
+    title: "macos-use: the diff you see is not the raw AX tree",
     description:
-      "CGWindowListCreateImage leaks ReplayKit into the caller's process at ~19% CPU. macos-use screenshots from a second executable so the leak exits with the subprocess.",
+      "Coordinate-only changes dropped, scroll-bar roles dropped, empty AXRow/AXCell dropped, text back-filled via depth-first proximity. Read main.swift:649-718.",
   },
 };
 
@@ -72,52 +71,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "What exactly is the screenshot-helper target and why does macos-use ship two binaries instead of one?",
-    a: "Package.swift at the repo root declares two executableTarget entries. The first, mcp-server-macos-use, is the long-running MCP server. The second, screenshot-helper, is an 111-line Swift program whose only job is to take one PNG and exit. The helper exists because CGWindowListCreateImage, the Apple API for grabbing a window image by CGWindowID, silently loads the ReplayKit framework the first time it runs in a process. ReplayKit then sits in that process forever and spins at roughly 19% CPU, even after the screenshot call returns. If the MCP server called CGWindowListCreateImage directly, its idle CPU would climb to 19% after the first click and never come back down. Running the call in a subprocess means ReplayKit dies with the subprocess on exit.",
+    q: "What exactly does macos-use filter out of the raw accessibility diff, and where is that done in the source?",
+    a: "Three filter passes run inside buildToolResponse at Sources/MCPServer/main.swift:612-725. Pass one drops any element whose role is a scroll-bar subcomponent, checked by isScrollBarNoise at main.swift:592-597 against the substrings scrollbar, scroll bar, value indicator, page button, and arrow button. Pass two drops any modification whose only changes are coordinate attributes, using a literal Set declared at line 649 as let coordinateAttrs: Set<String> = [\"x\", \"y\", \"width\", \"height\"] and applied at lines 681-682. Pass three drops any structural container with no text, checked by isStructuralNoise at main.swift:600-607 against AXRow, outline row, AXCell, cell, AXColumn, column, AXMenu, and menu. Nothing else in the codebase mutates the diff after these passes.",
   },
   {
-    q: "Where is the ReplayKit behaviour documented in the macos-use source?",
-    a: "It is not a footnote or a scattered comment. Sources/MCPServer/main.swift:382-385 has a doc-comment block above the captureWindowScreenshot function that says it in plain words: 'The actual CGWindowListCreateImage call runs in a subprocess (screenshot-helper) so that the ReplayKit framework — loaded as a side-effect by macOS — dies with the subprocess instead of spinning at ~19% CPU forever in the parent MCP server process.' The same file at line 458 has an inline comment on the Process() launch: 'Run screenshot-helper in a subprocess — ReplayKit dies when it exits.'",
+    q: "Why is dropping coordinate-only changes safe, and when would it hide something real?",
+    a: "macos-use already reports windowBounds and each surviving element carries x, y, width, and height alongside its role and text. If a model needs to know where something is to click it, the coordinates are right there. What the filter hides is reflow churn: the scroll view moved, every row's y shifted by 22, fifty modifications appear in the raw AX diff for a single click. None of those carry semantic information the agent can act on. The filter would hide a real change only if the code responded to a click by moving an element without altering any other attribute, and that element had no associated text. In practice the position move comes paired with the change the agent actually cares about (a button becoming enabled, a cell's text updating, a menu opening). The associated attribute change survives the filter and brings the element with it.",
   },
   {
-    q: "How does the parent process find the screenshot-helper binary at runtime?",
-    a: "Three lines at main.swift:436-438. `let myPath = CommandLine.arguments[0]`. `let myDir = (myPath as NSString).deletingLastPathComponent`. `let helperPath = (myDir as NSString).appendingPathComponent(\"screenshot-helper\")`. It does NSString path math against argv[0] and assumes the helper is a sibling file next to the main binary. That is why the default `swift build` layout works: both executables land in `.build/release/` and `.build/debug/` next to each other, and both are shipped together in any bin/ distribution.",
+    q: "How does macos-use find text for a cell or row whose AXValue is empty?",
+    a: "findTextForElement at main.swift:551-589 runs two fallback strategies. Strategy one is coordinate containment: walk every element in the traversal and return the first element that has non-empty text and whose x, y falls inside the container's bounds. Strategy two is list proximity: the AX traversal is depth-first, so children immediately follow their parent in the flat list. The function finds the container by role plus a 2px coordinate match, then scans forward up to five entries for text, stopping if it hits another AXRow (which would mean the scan left the current subtree). Strategy one handles visible cells. Strategy two handles off-screen cells that have no coordinates because the AX system only reports bounds for on-screen elements. Together they keep row and cell diffs legible instead of anonymous.",
   },
   {
-    q: "Is 19% CPU a random number or a real measurement?",
-    a: "Honest answer: it is the number in the comment, and in the author's testing. The exact percentage depends on the machine, the macOS version, and how often ReplayKit wakes up its internal timers. What is robust and repeatable is the shape: idle CPU that was near zero jumps to some double-digit percent after the first screenshot and does not recover until the process exits. The value of the subprocess is not knowing the exact leak, it is refusing to carry it.",
+    q: "What counts as scroll-bar noise exactly?",
+    a: "The substring list in isScrollBarNoise is deliberately wide. It catches AXScrollBar itself, but also AXValueIndicator (the draggable thumb), AXPageButton (the area above and below the thumb), AXArrowButton (the end caps), and generic scroll bar variants. Any click or scroll that moves the scroll view fires updates on the thumb position and the page button bounds, which would otherwise spam the diff with three or four modifications for every scroll event. After the filter, a scroll operation that reveals new content returns only the new content. The scroll mechanism itself is silent.",
   },
   {
-    q: "What is the timeout on the helper and what happens when it fires?",
-    a: "5.0 seconds, set at main.swift:476 as `let timeoutSeconds = 5.0`. The parent runs the subprocess with Process(), wraps waitUntilExit in a DispatchGroup, and waits with `group.wait(timeout: deadline)`. On timeout the parent calls process.terminate(), logs a warning to stderr, and returns nil. The MCP tool response omits the screenshot field but the accessibility tree diff is unaffected. An agent always gets a compact summary, with or without the PNG.",
+    q: "Is the compact summary line (3 added, 2 modified) computed before or after filtering?",
+    a: "After. buildDiffSummary at main.swift:888-895 counts diff.added.count, diff.removed.count, and diff.modified.count on the already-filtered EnrichedTraversalDiff assigned at main.swift:714-718. The number the model sees in its response summary is always the post-filter count. This matters because the numbers become the prompt: if a scroll showed \"18 modified\" every time due to scroll-bar churn, the model would start ignoring the field. Keeping the count semantic keeps it useful.",
   },
   {
-    q: "How does macos-use pick the right window when an app has many?",
-    a: "Not largest-wins. main.swift:396-425 iterates CGWindowListCopyWindowInfo filtered by ownerPID == pid and layer == 0, and scores each candidate by its intersection area with the traversal window bounds: `score = intersection.width * intersection.height` unless traversalWindowBounds is nil, in which case it falls back to `rect.width * rect.height`. The window with the highest score wins. This matters for apps with inspectors, popovers, or multiple document windows, because the traversal the model just saw is a specific AXWindow, not the topmost or largest one.",
+    q: "Does the filter affect the full traversal returned by open or refresh, or only diffs?",
+    a: "Only diffs. For tools that return a full traversal (open_application_and_traverse, refresh_traversal), the response field is toolResponse.traversal, populated at main.swift:721 by enrichResponseData. That function adds in_viewport flags but does not strip any roles. A refresh gives you the whole tree. The filter pipeline runs only when hasDiff is true, inside the else branch that builds EnrichedTraversalDiff.",
   },
   {
-    q: "Does the helper get a fresh ReplayKit load every time, and is that expensive?",
-    a: "Yes and no. Each subprocess starts clean, so ReplayKit gets loaded fresh inside it, takes the screenshot, and dies seconds later. Process startup plus ReplayKit init is the dominant cost: measured at a few hundred milliseconds per call on Apple Silicon. This runs once per MCP tool call that needs a screenshot, right after the AX traversal diff is built, so it is already serialised with the main work. The parent server's idle CPU remains flat between calls.",
+    q: "How does macos-use decide in_viewport when an app has multiple windows?",
+    a: "getAllWindowBoundsFromTraversal at main.swift:297 collects CGRects from every AXWindow in the traversal. isPointInAnyWindow at main.swift:318 then checks whether an element's x, y falls inside any of those rects. The in_viewport flag is true if the point is inside any window, false otherwise. This is why a popover, dialog, or secondary window does not cause visible elements to be marked invisible: every window contributes to the viewport set. Sheets are a special case. When an AXSheet is present, windowBounds is narrowed to the sheet and sheetDetected is set in the response so the agent knows focus is modal.",
   },
   {
-    q: "Could you avoid the leak without a subprocess, for instance with ScreenCaptureKit?",
-    a: "ScreenCaptureKit (SCKit) is the officially supported modern path and does avoid the ReplayKit-via-CoreGraphics trap, but it is heavier: an async stream API, permissions nuance, and different window targeting semantics. For a tool that wants a single synchronous PNG per MCP request, a forked subprocess calling the old CGWindowListCreateImage is two-times simpler in both code and lifecycle. The repo keeps the subprocess path; a future revision could move to SCKit inside the helper without changing anything about how the MCP server itself behaves.",
+    q: "Why are static text entries capped at 10 and interactive entries capped at 30 in the compact summary?",
+    a: "main.swift:933 defines buildVisibleElementsSection with defaults interactiveCap: 30 and textCap: 10. For diffs of new elements (diff.added), the caps are tightened to 20 and 10 at main.swift:867. The reason is MCP response size. A huge AX tree can emit hundreds of visible elements per call. The model does not need all of them inline when the full set is already in the flat text file at /tmp/macos-use/. The compact summary is a teaser with enough structure to write the next action; the file is there when the model wants to grep.",
   },
   {
-    q: "How does the crosshair on the screenshot get drawn, and why does the parent not do it?",
-    a: "All drawing happens in the helper, in Sources/ScreenshotHelper/main.swift:50-91. The parent passes --click <x>,<y> and --bounds <x>,<y>,<w>,<h> as argv. The helper creates a CGContext, draws the window image into it, converts screen click coordinates to local image coordinates using the scale between CGImage dimensions and the window rect, flips Y for CoreGraphics, and strokes a red crosshair plus a circle (radius 10 * max(scaleX, scaleY)). Keeping this in the helper means the parent stays fully decoupled from any CoreGraphics drawing code, which again avoids loading anything that might pull ReplayKit.",
+    q: "What are the interactive role prefixes the compact summary recognises?",
+    a: "main.swift:916-920 lists twelve: AXButton, AXLink, AXTextField, AXTextArea, AXCheckBox, AXRadioButton, AXPopUpButton, AXComboBox, AXSlider, AXMenuItem, AXMenuButton, and AXTab. isInteractiveRole is a has-prefix check, so AXMenuItemCell, AXComboBoxSubrole, and other longer variants still match. Everything else lands in the static-text bucket only if its role starts with AXStaticText. Anything that is neither interactive nor static text is dropped from the inline preview entirely (it stays in the flat file).",
   },
   {
-    q: "How do I verify the two-binary layout on my machine?",
-    a: "Clone the repo, run `xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift build`, then `ls .build/debug | grep -E 'mcp-server-macos-use|screenshot-helper'`. You will see both binaries side by side. `file .build/debug/screenshot-helper` confirms it is a Mach-O executable, not a dylib or framework. `lldb -x -o 'target create .build/debug/screenshot-helper' -o 'image list' -o quit` will show ReplayKit appearing in the loaded image list only after the first CGWindowListCreateImage call, not at launch.",
+    q: "How do I verify the filter pipeline on my own machine?",
+    a: "Clone the repo, install the MCP server, point Claude Desktop at it, and grep. Example: grep -n 'coordinateAttrs' Sources/MCPServer/main.swift returns line 649. grep -nE 'isScrollBarNoise|isStructuralNoise' returns the predicate definitions and every call site. For a live check, open TextEdit via open_application_and_traverse, then scroll_and_traverse in a long document. The response summary will show a handful of added elements (the newly-revealed text) and no modified entries for the scroll bar itself. Remove the coordinateAttrs filter in a local build and the same scroll emits dozens of coordinate-only modifications. The difference is the filter doing its job.",
   },
   {
-    q: "Why is this not documented as a known macOS issue anywhere more prominent?",
-    a: "It is a framework-loading side effect, not a documented bug. CGWindowListCreateImage is deprecated as of macOS 14 in favour of ScreenCaptureKit, so the issue sits in 'legacy API you probably should not be using anyway' territory. Tools that ship short-lived CLIs never notice because the process exits before the leak matters. Only long-lived daemons like an MCP server hit it. macos-use paid attention; the fix is committed in Package.swift and a standalone Sources/ScreenshotHelper/main.swift, not hidden in a dispatch queue.",
+    q: "Does this filtering approach lose any information the agent needs later?",
+    a: "Short answer: no, because the filter writes to the summary, not to the flat file. Every MCP tool response is paired with a file at /tmp/macos-use/<timestamp>_<tool>.txt containing the full serialised traversal and diff, pre-filter counts and all. An agent that suspects something was trimmed can grep that file by role, text, or coordinates. The filter shapes what arrives in the model's context window by default, it does not erase data. This is the same design principle as the subprocess screenshot: make the default cheap, keep the full fidelity on disk.",
   },
   {
-    q: "Does every MCP tool call take a screenshot?",
-    a: "Yes, any call that goes through the CallTool handler ends with a screenshot attempt, at main.swift:1832-1839. The effective PID for the shot is `appSwitchPid ?? traversalPid ?? pidForTraversal`, meaning if a click triggered an app switch (a file picker opening a dialog in Finder, for example), the screenshot is of the new frontmost app's window, not the original target. The PNG path lands in the tool summary as `screenshot: /tmp/macos-use/<timestamp>_<tool>.png`, same timestamp as the full response text file, so logs pair up cleanly.",
+    q: "Where does the text_changes line in the response come from?",
+    a: "main.swift:837-858. After the summary line, buildCompactSummary scans the first five modifications in the filtered diff. For each modification, it walks the surviving changes and picks out any whose attributeName is text or AXValue. Up to three of those are emitted as lines shaped like '  'old text' -> 'new text'' with each value truncated to 60 characters. The effect is that a typing operation or a label swap shows up as a human-readable before-after pair in the summary, without the model needing to open the flat file.",
   },
 ];
 
@@ -137,121 +136,106 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const packageCode = `// Package.swift — two executableTarget entries, not one.
-// The second one exists only so CGWindowListCreateImage can die on exit.
-let package = Package(
-    name: "mcp-server-macos-use",
-    platforms: [.macOS(.v13)],
-    dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git",
-                 from: "0.11.0"),
-        .package(url: "https://github.com/mediar-ai/MacosUseSDK.git",
-                 branch: "main")
-    ],
-    targets: [
-        .executableTarget(
-            name: "mcp-server-macos-use",
-            dependencies: [
-                .product(name: "MCP",         package: "swift-sdk"),
-                .product(name: "MacosUseSDK", package: "MacosUseSDK")
-            ],
-            path: "Sources/MCPServer",
-            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
-        ),
-        // The leak-containment target. 111 lines of Swift whose job is to
-        // take one PNG and exit so that ReplayKit dies with the process.
-        .executableTarget(
-            name: "screenshot-helper",
-            path: "Sources/ScreenshotHelper"
-        ),
-    ]
-)`;
+const filterCode = `// Sources/MCPServer/main.swift:648-718 (condensed)
+// The accessibility diff the model receives is not the raw AX tree diff.
+// Three filter passes run before the response leaves the server.
 
-const captureCode = `// Sources/MCPServer/main.swift:378-511 (excerpt)
-// IMPORTANT: The actual CGWindowListCreateImage call runs in a subprocess
-// (screenshot-helper) so that the ReplayKit framework — loaded as a
-// side-effect by macOS — dies with the subprocess instead of spinning at
-// ~19% CPU forever in the parent MCP server process.
-func captureWindowScreenshot(
-    pid: pid_t,
-    outputPath: String,
-    clickPoint: CGPoint? = nil,
-    traversalWindowBounds: CGRect? = nil
-) -> String? {
-    // Window selection: score each candidate by overlap with the
-    // traversal window bounds, fall back to area. Not largest-wins.
-    var targetWindowID: CGWindowID? = nil
-    var bestScore: CGFloat = 0
-    for window in windowList {
-        let score: CGFloat
-        if let twb = traversalWindowBounds {
-            let intersection = rect.intersection(twb)
-            score = intersection.isNull ? 0 : intersection.width * intersection.height
-        } else {
-            score = rect.width * rect.height
-        }
-        if score > bestScore { bestScore = score; targetWindowID = windowID }
+if hasDiff, let rawDiff = result.traversalDiff {
+    let coordinateAttrs: Set<String> = ["x", "y", "width", "height"]   // line 649
+
+    // Pass 1 + 3: scroll-bar roles out, empty structural containers out.
+    let filteredAdded = rawDiff.added
+        .filter { !isScrollBarNoise($0.role) }                          // scroll-bar noise
+        .map { enrichWithTextAndViewport($0) }
+        .filter { !isStructuralNoise($0.role, text: $0.text) }          // empty AXRow/AXCell
+
+    // Pass 2: modifications whose ONLY changes are x/y/w/h get dropped whole.
+    var filteredModified: [DiffModifiedElement] = []
+    for mod in rawDiff.modified {
+        if isScrollBarNoise(mod.before.role) || isScrollBarNoise(mod.after.role) { continue }
+
+        let meaningfulChanges = mod.changes
+            .filter { !coordinateAttrs.contains($0.attributeName) }     // line 681
+        if meaningfulChanges.isEmpty { continue }                        // line 682
+
+        filteredModified.append(DiffModifiedElement(
+            before: enrichWithText(mod.before),
+            after:  enrichWithText(mod.after),
+            changes: meaningfulChanges.map(toDiffAttributeChange)
+        ))
     }
 
-    // Locate the helper: it is a sibling file next to argv[0].
-    let myPath     = CommandLine.arguments[0]
-    let myDir      = (myPath as NSString).deletingLastPathComponent
-    let helperPath = (myDir as NSString).appendingPathComponent("screenshot-helper")
-
-    // Run screenshot-helper in a subprocess — ReplayKit dies when it exits.
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: helperPath)
-    process.arguments     = [String(windowID), outputPath] + extraArgs
-
-    let timeoutSeconds = 5.0
-    let deadline = DispatchTime.now() + timeoutSeconds
-    let group = DispatchGroup()
-    group.enter()
-    DispatchQueue.global().async { process.waitUntilExit(); group.leave() }
-
-    if group.wait(timeout: deadline) == .timedOut {
-        process.terminate()
-        fputs("warning: captureWindowScreenshot: screenshot-helper timed out\\n", stderr)
-        return nil
-    }
-    return String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    response.diff = EnrichedTraversalDiff(
+        added:    filteredAdded,
+        removed:  filteredRemoved,
+        modified: filteredModified
+    )
 }`;
 
-const helperCode = `// Sources/ScreenshotHelper/main.swift — the entire 111-line binary.
-// It loads ReplayKit (indirectly, via CGWindowListCreateImage) once, then dies.
-import Foundation
-import CoreGraphics
-import AppKit
+const predicateCode = `// Sources/MCPServer/main.swift:592-607 , the noise predicates, verbatim.
+// Substring checks, not exact matches, so subroles and variants are caught too.
 
-func main() -> Int32 {
-    let args = CommandLine.arguments
-    guard args.count >= 3, let windowID = CGWindowID(args[1]) else {
-        fputs("usage: screenshot-helper <windowID> <outputPath> ...\\n", stderr)
-        return 1
-    }
-    let outputPath = args[2]
-    // ... parse --click and --bounds from argv ...
-
-    // This call is what loads ReplayKit into the process.
-    // By the time the PNG is on disk and we exit, the framework dies with us.
-    guard let image = CGWindowListCreateImage(
-        .null,
-        .optionIncludingWindow,
-        windowID,
-        [.boundsIgnoreFraming, .bestResolution]
-    ) else {
-        fputs("error: CGWindowListCreateImage failed for window \\(windowID)\\n", stderr)
-        return 1
-    }
-
-    // Optionally draw a red crosshair + circle in the window image using a
-    // CGContext, then write a PNG via NSBitmapImageRep.
-    try pngData.write(to: URL(fileURLWithPath: outputPath))
-    print(outputPath)
-    return 0
+/// Returns true if the role represents a scroll-bar component (noise in diffs).
+func isScrollBarNoise(_ role: String) -> Bool {
+    let lower = role.lowercased()
+    return lower.contains("scrollbar") || lower.contains("scroll bar") ||
+           lower.contains("value indicator") ||
+           lower.contains("page button") || lower.contains("arrow button")
 }
 
-exit(main())`;
+/// Returns true if the role is a structural container that's noise without text.
+func isStructuralNoise(_ role: String, text: String?) -> Bool {
+    if let text = text, !text.isEmpty { return false }     // text rescues a container
+    let lower = role.lowercased()
+    return lower.contains("axrow")    || lower.contains("outline row") ||
+           lower.contains("axcell")   || lower.contains("cell") ||
+           lower.contains("axcolumn") || lower.contains("column") ||
+           lower.contains("axmenu")   || lower.contains("menu")
+}`;
+
+const textFillCode = `// Sources/MCPServer/main.swift:551-589 , text back-fill for empty containers.
+// An AXRow with no AXValue is useless to a model. Two strategies find a label.
+
+func findTextForElement(_ element: ElementData, in traversal: ResponseData?) -> String? {
+    if let text = element.text, !text.isEmpty { return text }
+    guard let elements = traversal?.elements else { return nil }
+
+    // Strategy 1: coordinate containment (works for visible elements).
+    // Walk every element and return the first text-bearing child inside the bounds.
+    if let x = element.x, let y = element.y,
+       let w = element.width, let h = element.height {
+        let bounds = CGRect(x: x, y: y, width: w, height: h)
+        for el in elements {
+            if let elText = el.text, !elText.isEmpty,
+               let elX = el.x, let elY = el.y,
+               bounds.contains(CGPoint(x: elX, y: elY)) {
+                return elText
+            }
+        }
+    }
+
+    // Strategy 2: list proximity (works for off-screen elements with no coords).
+    // Depth-first traversal means children follow the parent in the flat list.
+    // Match the container by role + ±2px coordinate, then scan next 5 entries
+    // for text. Stop if we hit another AXRow (subtree boundary).
+    if let x = element.x, let y = element.y {
+        for (i, el) in elements.enumerated() {
+            if el.role == element.role,
+               let elX = el.x, let elY = el.y,
+               abs(elX - x) < 2, abs(elY - y) < 2 {
+                for j in (i + 1)..<min(i + 6, elements.count) {
+                    if let text = elements[j].text, !text.isEmpty {
+                        return text
+                    }
+                    if elements[j].role.contains("AXRow") && j > i + 1 { break }
+                }
+                break
+            }
+        }
+    }
+
+    return nil
+}`;
 
 export default function MacosUsePage() {
   return (
@@ -271,29 +255,29 @@ export default function MacosUsePage() {
                 Swift MCP server
               </span>
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
-                2 binaries
+                filter pipeline
               </span>
               <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                screenshot-helper
+                coordinateAttrs
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              macos-use Ships Two Binaries Because{" "}
-              <GradientText>ReplayKit Leaks</GradientText> At 19% CPU Forever
+              macos-use Does Not Hand You The{" "}
+              <GradientText>Raw Accessibility Diff</GradientText>. It Hands You
+              A Filtered One.
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Every writeup of macos-use covers the same two points: it reads
-              the macOS accessibility tree instead of analysing pixels, and
-              every tool call returns a diff of what changed in that tree. None
-              of them covers the second executable target. The reason it exists
-              is a four-line comment in{" "}
-              <span className="font-mono text-sm">main.swift</span> and a real
-              macOS side effect: the first call to{" "}
-              <span className="font-mono text-sm">CGWindowListCreateImage</span>{" "}
-              inside any process loads ReplayKit, and ReplayKit then spins at
-              roughly 19% CPU inside that process until it exits. The fix is
-              not a threading trick. It is a second Swift binary that takes one
-              PNG and dies.
+              Every writeup of macos-use says the same thing: it reads the
+              macOS accessibility tree and returns a diff. That description is
+              true for the first two steps and misleading for what actually
+              reaches the model. Before the MCP response leaves the Swift
+              server, a three-pass filter removes coordinate-only modifications,
+              scroll-bar subcomponents, and empty structural containers, then
+              back-fills text onto rows and cells that had none. The rules are
+              declared literally in{" "}
+              <span className="font-mono text-sm">main.swift</span>, not in a
+              config file, and they are the reason a click in a long list
+              arrives as a readable event instead of fifty pixel shifts.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
@@ -301,14 +285,14 @@ export default function MacosUsePage() {
               readingTime="9 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Package.swift">
-                Read Package.swift on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L648">
+                Read the filter pipeline on GitHub
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L551"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Open the 111-line helper
+                Open findTextForElement
               </a>
             </div>
           </div>
@@ -319,23 +303,23 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Two executableTarget entries in Package.swift",
-            "5.0s subprocess timeout on every shot",
-            "Helper resolved by path math on CommandLine.arguments[0]",
+            "Coordinate-only modifications dropped entirely",
+            "Scroll-bar roles and empty AXRow/AXCell stripped",
+            "Text back-filled via two-strategy proximity search",
           ]}
         />
 
-        {/* Concept intro — Remotion clip */}
+        {/* Concept intro , Remotion clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="The second binary exists because ReplayKit won't leave."
-            subtitle="A containment pattern you only write if you've watched the CPU graph"
+            title="The diff you see is not the diff macOS emitted."
+            subtitle="Three filter passes stand between the raw AX tree and your model"
             captions={[
-              "CGWindowListCreateImage silently loads ReplayKit",
-              "ReplayKit then spins at ~19% CPU in the caller, forever",
-              "Long-lived daemons inherit the leak; CLIs don't notice",
-              "Fix: screenshot inside a subprocess that can die",
-              "Package.swift ships TWO executableTarget entries",
+              "Raw AX diff after a click: often 40-60 modifications",
+              "Pass 1 strips scroll-bar roles (thumb, page button, end caps)",
+              "Pass 2 drops modifications whose only changes are x/y/w/h",
+              "Pass 3 removes AXRow and AXCell that carry no text",
+              "What arrives in your model: a handful of semantic events",
             ]}
             accent="teal"
           />
@@ -344,186 +328,154 @@ export default function MacosUsePage() {
         {/* The fact itself */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Bug That Justifies A Second Target
+            The Four Attribute Names That Run The Whole Trick
           </h2>
           <p className="text-zinc-600 mb-4">
-            Here is the comment, verbatim, from{" "}
+            The line that makes this possible is short enough to quote whole.
+            It sits inside{" "}
             <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/main.swift:382-385
+              buildToolResponse
+            </span>{" "}
+            at{" "}
+            <span className="font-mono text-sm text-teal-700">
+              Sources/MCPServer/main.swift:649
             </span>
             :
           </p>
           <blockquote className="rounded-2xl border border-teal-200 bg-teal-50 p-6 my-6 font-mono text-sm text-zinc-800 leading-relaxed">
-            IMPORTANT: The actual CGWindowListCreateImage call runs in a
-            subprocess (screenshot-helper) so that the ReplayKit framework
-            {" "}— loaded as a side-effect by macOS — dies with the subprocess
-            instead of spinning at ~19% CPU forever in the parent MCP server
-            process.
+            let coordinateAttrs: Set&lt;String&gt; = [&quot;x&quot;, &quot;y&quot;, &quot;width&quot;, &quot;height&quot;]
           </blockquote>
           <p className="text-zinc-600 mb-4">
-            The short version: the moment you call{" "}
-            <span className="font-mono text-sm">CGWindowListCreateImage</span>{" "}
-            for the first time in any process, the OS lazy-loads ReplayKit as
-            part of the implementation path. ReplayKit spins up internal
-            services. Those services do not unload when the screenshot call
-            returns; they do not unload when you drop every reference you have
-            to the image; they do not even unload if you explicitly try. The
-            only way to get the CPU back is to exit the process.
+            Thirty-two lines later, at 681-682, that Set decides whether a
+            modification survives:
           </p>
+          <blockquote className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6 my-6 font-mono text-sm text-zinc-800 leading-relaxed">
+            let meaningfulChanges = mod.changes.filter {"{"} !coordinateAttrs.contains($0.attributeName) {"}"}
+            <br />
+            if meaningfulChanges.isEmpty {"{"} continue {"}"}
+          </blockquote>
           <p className="text-zinc-600">
-            A CLI that runs one screenshot and exits never notices. A daemon
-            running for hours on behalf of an AI agent, firing a screenshot
-            after every click, absolutely notices. macos-use is that kind of
-            daemon. So it shards the screenshot responsibility into a second
-            executable and pays the startup cost of a fresh process every time
-            rather than carrying a leaking framework in the main server for
-            its entire lifetime.
+            Every modification the macOS accessibility system emits has a list
+            of attribute changes (text, AXValue, enabled, focused, x, y, width,
+            height, etc.). The filter keeps the modification only if at least
+            one change is outside the coordinate set. If a scroll view moves
+            thirty rows, macOS reports thirty modifications with x and y
+            changes. None of them carry an agent-actionable state change, so
+            all thirty disappear. What survives is the row or button whose text
+            or enabled state actually flipped.
           </p>
         </section>
 
         {/* BeforeAfter */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            Monolithic Server vs Two-Target Repo
+            Raw AX Diff vs What macos-use Actually Returns
           </h2>
           <BeforeAfter
-            title="The CPU graph, when you screenshot inside the server vs inside a helper"
+            title="One scroll event, 22 pixels down, inside a Finder list"
             before={{
-              label: "Naive: one executable target",
+              label: "Raw accessibility diff (before filtering)",
               content:
-                "The MCP server calls CGWindowListCreateImage directly. First click comes in, ReplayKit loads as a side effect of the API path. ReplayKit spins up a handful of internal timers and audio/video subsystems. The call returns a CGImage, the server saves a PNG, and the framework keeps running. Idle CPU on the server process moves from near-zero to roughly 19% and stays there. Nothing the server does afterwards can evict ReplayKit short of process exit.",
+                "macOS emits 47 modifications for a single scroll-wheel tick inside a long Finder list. Every visible row reports new y coordinates. The scroll bar reports a new value indicator position. The page button areas resize. The AXScrollArea reports new content offsets. Zero of these modifications carry information about which rows are now visible vs hidden, because the rows themselves did not change, they just moved. An LLM reading this diff has to reason about layout churn instead of content.",
               highlights: [
-                "First screenshot succeeds",
-                "Server CPU climbs to ~19% and stays",
-                "Restart is the only recovery",
+                "47 modifications, most of them x/y changes",
+                "No single entry describes the new viewport",
+                "Tokens spent on pixel math, not on state",
               ],
             }}
             after={{
-              label: "macos-use: two executable targets",
+              label: "macos-use filtered diff",
               content:
-                "The MCP server fork-execs screenshot-helper with Process(), hands it a windowID and an output path, and waits up to 5 seconds for a PNG. The helper loads ReplayKit, takes the shot, writes the file, prints the path to stdout, and exits. ReplayKit dies with the subprocess. The server's own CPU never sees the framework, so idle CPU between calls stays at baseline. The container cost is one exec per screenshot.",
+                "The same scroll event arrives as roughly 3 added rows (the content newly revealed at the bottom), 3 removed rows (the content that scrolled off the top), and 0 modifications. The scroll-bar subcomponents are gone (isScrollBarNoise). The rows that just moved but did not change contents are gone (coordinate-only filter). Empty AXRow containers that lost their text children to proximity are gone (isStructuralNoise). The compact summary line reads '3 added, 3 removed'. The agent picks up immediately.",
               highlights: [
-                "Server CPU stays at baseline between calls",
-                "ReplayKit lifetime bounded by subprocess lifetime",
-                "Helper exit = full reclamation",
+                "About 6 entries, all carrying semantic content",
+                "Scroll-bar updates never reach the model",
+                "Tokens spent on what changed, not how it moved",
               ],
             }}
           />
         </section>
 
-        {/* Anchor fact: Package.swift */}
+        {/* Anchor fact: the filter code */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
-              Anchor fact
+              Anchor code
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Two executableTarget Entries In Package.swift
+              The Entire Filter Pipeline, In One Function
             </h2>
             <p className="text-zinc-600 mb-6">
-              The containment pattern is declared in the build manifest, not
-              hidden in a runtime config. A reader opening the project cold
-              sees that there are two executables before they see anything
-              else. The second one has no dependencies, no product export, and
-              its path points at a directory with a single Swift file.
+              Nothing about this is hidden in a dispatch queue or gated by a
+              feature flag. Every MCP tool call that ends in a diff flows
+              through this block. If you fork the repo and delete lines 681 and
+              682, your responses immediately bloat with coordinate-only
+              modifications.
             </p>
             <AnimatedCodeBlock
-              code={packageCode}
+              code={filterCode}
               language="swift"
-              filename="Package.swift"
+              filename="Sources/MCPServer/main.swift"
             />
             <p className="text-zinc-500 text-sm mt-4">
-              When you run{" "}
-              <span className="font-mono">swift build</span>, SwiftPM emits two
-              binaries into{" "}
-              <span className="font-mono">.build/release/</span>:{" "}
-              <span className="font-mono">mcp-server-macos-use</span> and{" "}
-              <span className="font-mono">screenshot-helper</span>, side by
-              side. The server finds the helper at runtime by doing NSString
-              path math on{" "}
-              <span className="font-mono">CommandLine.arguments[0]</span>,
-              appending{" "}
-              <span className="font-mono">screenshot-helper</span>, and{" "}
-              <span className="font-mono">FileManager.default.fileExists</span>
-              -checking the result. If the helper is missing, the server
-              fails gracefully: the MCP response omits the screenshot field but
-              the AX diff still arrives. Nothing crashes.
+              The variable name{" "}
+              <span className="font-mono">meaningfulChanges</span> is load
+              bearing. After the filter, every change still attached to a
+              modification describes a state transition the agent can reason
+              about. The x, y, width, and height are not discarded as data,
+              they are still present on the before and after element records.
+              What is dropped is only the claim that the coordinate change is
+              itself the event.
             </p>
           </div>
         </section>
 
-        {/* AnimatedBeam — the pipeline */}
+        {/* AnimatedBeam , the pipeline */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Screenshot Pipeline, Split Across Two Processes
+            What Flows In, What Flows Out
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            The parent server does everything except the actual pixel read. It
-            picks the window, decides where to draw the crosshair, and streams
-            the result back to the MCP client. All the framework-loading cost
-            lands inside the helper, isolated behind a Process() boundary.
+            The raw inputs come from three macOS sources: the pre-action AX
+            traversal, the post-action AX traversal, and the window bounds of
+            every AXWindow the app owns. The pipeline merges them into one
+            enriched diff. Everything below the hub runs in a single
+            synchronous function; no threads, no queues, no async.
           </p>
           <AnimatedBeam
-            title="What happens between the MCP call and the PNG on disk"
+            title="From raw accessibility data to filtered MCP response"
             from={[
-              { label: "click_and_traverse arrives on stdio" },
-              { label: "AX traversal diff ready" },
-              { label: "traversalWindowBounds captured" },
+              { label: "AX traversal before action" },
+              { label: "AX traversal after action" },
+              { label: "Multi-window bounds" },
             ]}
-            hub={{ label: "captureWindowScreenshot" }}
+            hub={{ label: "buildToolResponse" }}
             to={[
-              { label: "CGWindow scored & picked" },
-              { label: "screenshot-helper forked" },
-              { label: "PNG path returned to client" },
+              { label: "Scroll-bar roles dropped" },
+              { label: "Coordinate-only mods dropped" },
+              { label: "Empty AXRow/AXCell dropped" },
+              { label: "Text back-filled on survivors" },
             ]}
           />
         </section>
 
-        {/* AnimatedCodeBlock — captureWindowScreenshot */}
+        {/* The predicates code */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            captureWindowScreenshot: The Entire Isolation Contract
+            The Noise Predicates Are Substring Checks, On Purpose
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            One function in the server handles window selection, subprocess
-            launch, timeout, and fallback. Nothing else in the server touches
-            CoreGraphics or ReplayKit-adjacent code. The function&rsquo;s
-            boundary is the containment boundary.
+            macOS role names are not a closed set. Apps define custom subroles,
+            third-party toolkits add their own naming conventions, and Apple
+            ships new identifiers between releases. Exact-string matching would
+            miss half of them. The predicates use lowercased substring checks
+            so a new AXScrollBarCustomThumb still lands in the noise bucket
+            without a code change.
           </p>
           <AnimatedCodeBlock
-            code={captureCode}
+            code={predicateCode}
             language="swift"
             filename="Sources/MCPServer/main.swift"
-          />
-        </section>
-
-        {/* SequenceDiagram — the lifetime story */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Where ReplayKit Lives, Moment By Moment
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Follow the framework across the request. At no point is it alive
-            inside the MCP server process. Its entire existence is bounded by
-            two events inside the helper: the first CGWindowListCreateImage
-            call and the{" "}
-            <span className="font-mono text-sm">exit()</span> at the bottom of{" "}
-            <span className="font-mono text-sm">main()</span>.
-          </p>
-          <SequenceDiagram
-            title="One tool call, two processes, one brief ReplayKit lifetime"
-            actors={["MCP client", "Server process", "Helper process", "ReplayKit"]}
-            messages={[
-              { from: 0, to: 1, label: "click_and_traverse", type: "request" },
-              { from: 1, to: 1, label: "build AX diff", type: "event" },
-              { from: 1, to: 2, label: "fork-exec with windowID, outputPath", type: "request" },
-              { from: 2, to: 3, label: "CGWindowListCreateImage loads framework", type: "event" },
-              { from: 3, to: 2, label: "CGImage returned", type: "response" },
-              { from: 2, to: 2, label: "write PNG, print path", type: "event" },
-              { from: 2, to: 3, label: "process exit kills framework", type: "error" },
-              { from: 2, to: 1, label: "stdout: /tmp/macos-use/xxx.png", type: "response" },
-              { from: 1, to: 0, label: "summary + screenshot path", type: "response" },
-            ]}
           />
         </section>
 
@@ -531,58 +483,61 @@ export default function MacosUsePage() {
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              The Numbers From The Source
+              The Numbers Are Countable From The Source
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              Each value below is a literal read off the current commit. Grep
-              for the tokens and the grep will find them.
+              Every value below is a literal read off the current commit of{" "}
+              <span className="font-mono text-sm">
+                Sources/MCPServer/main.swift
+              </span>
+              . Run grep on the tokens and the grep will find them.
             </p>
             <MetricsRow
               metrics={[
-                { value: 19, suffix: "%", label: "idle CPU cost of ReplayKit in the parent, avoided" },
-                { value: 2, label: "executableTarget entries in Package.swift" },
-                { value: 111, label: "lines of Swift in the standalone helper" },
-                { value: 5, suffix: "s", label: "subprocess timeout per screenshot" },
+                { value: 4, label: "coordinate attribute names stripped (x, y, width, height)" },
+                { value: 5, label: "scroll-bar substrings caught by isScrollBarNoise" },
+                { value: 8, label: "structural role substrings caught by isStructuralNoise" },
+                { value: 2, label: "fallback strategies inside findTextForElement" },
               ]}
             />
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={378} />
+                    <NumberTicker value={649} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    main.swift line where captureWindowScreenshot begins
+                    line where coordinateAttrs is declared
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={511} />
+                    <NumberTicker value={681} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    main.swift line where it ends
+                    line where it filters mod.changes
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={10} suffix="pt" />
+                    <NumberTicker value={12} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    crosshair circle radius (scaled), drawn inside helper
+                    interactive role prefixes on the inline preview
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={15} suffix="pt" />
+                    <NumberTicker value={5} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    crosshair arm length (scaled)
+                    entries text-fill strategy 2 scans past a match
                   </div>
                 </div>
               </GlowCard>
@@ -590,137 +545,173 @@ export default function MacosUsePage() {
           </div>
         </section>
 
-        {/* StepTimeline */}
+        {/* StepTimeline , the pipeline stage by stage */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            One Tool Call, End To End
+            One Click, Seven Stages, One Filtered Diff
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            Eight concrete steps run between the stdio request arriving and the
-            PNG path appearing in the tool response. Exactly one of them loads
-            ReplayKit, and it runs inside a process that is about to die.
+            A click_and_traverse call runs these steps in order inside
+            buildToolResponse. Nothing below this is split across threads. The
+            entire filter is one synchronous pass over three arrays (added,
+            removed, modified).
           </p>
           <StepTimeline
             steps={[
               {
-                title: "CallTool handler receives the MCP request",
+                title: "Pre-action AX traversal captured",
                 description:
-                  "main.swift:1474 — the handler parses args, resolves the target PID, and kicks off the primary action plus before/after AX traversals. No screenshot yet.",
+                  "Before the click fires, the server walks the target PID's accessibility tree and records every element as ElementData: role, text, x, y, width, height, plus nested children. This becomes traversalBefore.",
               },
               {
-                title: "Primary action executes, diff is built",
+                title: "Primary action executes",
                 description:
-                  "Click, type, scroll, or press. The server compares the AX trees and builds EnrichedTraversalDiff. ToolResponse is populated including windowBounds from the AX window element.",
+                  "The click (or type, press, scroll) is posted via CGEvent. The UI updates. macOS may reflow layout, open menus, toggle disabled states, push popovers.",
               },
               {
-                title: "captureWindowScreenshot is called",
+                title: "Post-action AX traversal captured",
                 description:
-                  "main.swift:1838. The effective PID is appSwitchPid ?? traversalPid ?? pidForTraversal, so if the click opened a dialog in a different app, the screenshot follows. outputPath is /tmp/macos-use/<ms>_<tool>.png.",
+                  "A second full traversal is taken. Now we have traversalBefore and traversalAfter. The raw diff between them is the rawDiff object used at main.swift:648.",
               },
               {
-                title: "CGWindow list filtered and scored",
+                title: "All window bounds collected for viewport checks",
                 description:
-                  "Only windows with ownerPID == pid and layer == 0 survive. Each is scored by intersection area with traversalWindowBounds. The max-score window wins. This is NOT 'largest window'.",
+                  "getAllWindowBoundsFromTraversal walks every AXWindow in the new tree and returns its CGRect. This set powers isPointInAnyWindow later when each surviving element is tagged in_viewport = true/false.",
               },
               {
-                title: "Helper binary resolved next to argv[0]",
+                title: "Filter pass 1: scroll-bar roles stripped",
                 description:
-                  "CommandLine.arguments[0] → NSString.deletingLastPathComponent → appendingPathComponent(\"screenshot-helper\"). FileManager.default.fileExists gates the launch; missing helper is logged and the call returns nil.",
+                  "isScrollBarNoise lowercases the role and checks for scrollbar, scroll bar, value indicator, page button, arrow button. Added, removed, and modified arrays are each filtered independently.",
               },
               {
-                title: "Process() launched with 5.0s deadline",
+                title: "Filter pass 2: coordinate-only modifications dropped",
                 description:
-                  "argv is [windowID, outputPath, --click x,y, --bounds x,y,w,h]. stdout and stderr are piped. A DispatchGroup-backed wait enforces timeout; on timeout process.terminate() is called.",
+                  "For each surviving modification, mod.changes is filtered against coordinateAttrs. If meaningfulChanges is empty, the whole modification is skipped. A row that just moved but did not change state disappears here.",
               },
               {
-                title: "Helper reads one pixel region and exits",
+                title: "Filter pass 3: empty structural containers dropped",
                 description:
-                  "CGWindowListCreateImage runs (ReplayKit loads here and only here), optional crosshair is drawn via CGContext, PNG is written via NSBitmapImageRep.representation(using: .png), path is printed. exit() kills the process and all its frameworks.",
+                  "isStructuralNoise runs against each surviving added/removed element after text back-fill. An AXRow or AXCell that could not find text via either strategy is classified as noise and removed. A row that did find text rides through.",
               },
               {
-                title: "Server reads stdout, attaches path to response",
+                title: "EnrichedTraversalDiff assigned, response built",
                 description:
-                  "The PNG path goes into the compact summary as 'screenshot: /tmp/macos-use/...'. The server process memory is unchanged. A grep on the file path finds the PNG instantly. No ReplayKit in the server's image list.",
+                  "Lines 714-718. The filtered arrays are wrapped in EnrichedTraversalDiff and assigned to response.diff. buildCompactSummary then reads the already-filtered counts for its 'N added, M modified' line. The MCP response leaves the server.",
               },
             ]}
           />
         </section>
 
-        {/* The helper code block */}
+        {/* SequenceDiagram */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Entire 111-Line Helper
+            The Lifetime Of A Single Modification
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            Follow one entry through the pipeline. A row inside a Messages
+            sidebar scrolls by twenty pixels. macOS emits a modification for
+            it. Here is whether it survives each pass.
+          </p>
+          <SequenceDiagram
+            title="Row at (240, 380 -> 240, 360): alive, filtered, or dropped?"
+            actors={["macOS AX", "rawDiff.modified", "isScrollBarNoise", "coordinateAttrs filter", "EnrichedTraversalDiff"]}
+            messages={[
+              { from: 0, to: 1, label: "AXRow mod: y 380 -> 360", type: "request" },
+              { from: 1, to: 2, label: "role = AXRow, scroll-bar? no", type: "event" },
+              { from: 2, to: 1, label: "survives pass 1", type: "response" },
+              { from: 1, to: 3, label: "changes: [{y: 380 -> 360}]", type: "request" },
+              { from: 3, to: 3, label: "filter out y, empty set", type: "event" },
+              { from: 3, to: 4, label: "skip this modification", type: "error" },
+              { from: 4, to: 4, label: "filteredModified.count unchanged", type: "event" },
+            ]}
+          />
+        </section>
+
+        {/* The text fill code */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            Text Back-Fill: Two Strategies That Rescue Rows And Cells
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            Collapsed for readability, but the shape is real: argv parsing,
-            one CGWindowListCreateImage call, optional CoreGraphics drawing,
-            one PNG write, one exit. Every framework this program touches will
-            be unloaded within a second of main() returning.
+            After the filter drops anonymous containers, there is still a
+            problem: a real AXRow often has no text of its own. Its visible
+            text lives inside AXStaticText children nested beneath it. A diff
+            entry for an AXRow with no text would be useless, so macos-use
+            runs a two-strategy text search before the structural-noise filter
+            sees the entry.
           </p>
           <AnimatedCodeBlock
-            code={helperCode}
+            code={textFillCode}
             language="swift"
-            filename="Sources/ScreenshotHelper/main.swift"
+            filename="Sources/MCPServer/main.swift"
           />
+          <p className="text-zinc-500 text-sm mt-4">
+            Strategy one handles the common visible case. Strategy two is
+            there for off-screen rows whose children have no coordinates at
+            all because macOS only reports bounds for elements currently
+            rendered. The 2px tolerance on the coordinate match handles
+            floating-point differences between the ax-request response and
+            the original traversal.
+          </p>
         </section>
 
         {/* Checklist */}
         <section className="max-w-4xl mx-auto px-6 py-10">
           <AnimatedChecklist
-            title="What subprocess isolation buys you"
+            title="What the filter pipeline buys you"
             items={[
-              { text: "Constant idle CPU on the MCP server, regardless of click volume", checked: true },
-              { text: "Bounded worst-case memory: the helper is always a fresh process", checked: true },
-              { text: "No need to track which private frameworks a public API lazy-loads", checked: true },
-              { text: "Crashes in drawing code can't take the MCP server down", checked: true },
-              { text: "Timeouts are enforceable: Process.terminate() is a real kill switch", checked: true },
-              { text: "Swap CGWindowListCreateImage for ScreenCaptureKit later without touching the server", checked: true },
+              { text: "Responses are proportional to semantic change, not to layout reflow", checked: true },
+              { text: "A scroll tick never floods the model with 40+ modifications", checked: true },
+              { text: "AXRow and AXCell entries always carry usable text, visible or not", checked: true },
+              { text: "Compact-summary counts ('3 added, 2 modified') stay meaningful over time", checked: true },
+              { text: "Noise predicates match new subroles without code changes (substring, not equality)", checked: true },
+              { text: "Full raw traversal stays available via the flat file on disk for deep grep", checked: true },
             ]}
           />
         </section>
 
-        {/* Bento — what else the split keeps clean */}
+        {/* Bento , what each filter catches */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              Side Benefits You Get From The Split
+              What Each Pass Actually Catches In The Wild
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              The subprocess is there for one reason, but the architectural
-              cleanup it forces is worth listing. Everything below is a
-              natural consequence of pushing the CGImage work out of the
-              server.
+              The filter's value only becomes visible when you can point at a
+              specific kind of AX event it kills. Below are the categories
+              most agent traces contain before filtering, all of which are
+              gone afterward.
             </p>
             <BentoGrid
               cards={[
                 {
-                  title: "The server binary has no CoreGraphics drawing code",
+                  title: "Scroll thumb repositioning on every tick",
                   description:
-                    "Crosshair math, Y-flips, CGContext initialisation, NSBitmapImageRep.png representation — all live inside the helper. The server never imports AppKit for drawing purposes.",
+                    "AXValueIndicator on AXScrollBar fires a modification for every wheel event. Substring check on 'value indicator' and 'scrollbar' in isScrollBarNoise (main.swift:592-597) drops it before it reaches the diff.",
                   size: "2x1",
                 },
                 {
-                  title: "You can call the helper from a shell for debugging",
+                  title: "Row-level y shifts after a list reorder",
                   description:
-                    "screenshot-helper 12345 /tmp/out.png --click 640,400 --bounds 0,0,1440,900 works as a standalone command. Reproducing a bug does not require running the whole MCP stack.",
+                    "A click that inserts a new row pushes every row below it down by one row-height. The coordinateAttrs filter at main.swift:681 drops all of those from the modified array.",
                   size: "1x1",
                 },
                 {
-                  title: "Swap capture strategies without touching the server",
+                  title: "Page button bounds on any scroll",
                   description:
-                    "Replace the 111-line helper with a ScreenCaptureKit version. The server argv contract — windowID + outputPath + optional click/bounds — stays identical. No handler changes.",
+                    "AXScrollBar contains AXPageButton children representing the clickable regions above and below the thumb. 'page button' substring match kills their modifications too.",
                   size: "1x1",
                 },
                 {
-                  title: "Screen Recording entitlement scope is narrower",
+                  title: "Anonymous AXRow containers",
                   description:
-                    "If you ever wanted to bundle a signed version where only the helper declared Screen Recording permission, the split makes that trivial; the server binary never even appears in System Settings → Screen Recording.",
+                    "When a cell has no direct AXValue, its wrapping AXRow arrives with empty text. isStructuralNoise drops it, but only after findTextForElement gives it a chance to find a label from a child.",
                   size: "1x1",
                 },
                 {
-                  title: "Timeouts are mandatory and enforceable",
+                  title: "Menu container spam during hover",
                   description:
-                    "The 5-second DispatchTime deadline wrapping Process.waitUntilExit is only meaningful because it can terminate(). A thread inside the server doing the same work couldn't be cancelled this cleanly.",
+                    "Hovering over a menu bar item briefly spawns AXMenu and AXMenuItem containers, some of which have no text yet. isStructuralNoise drops the empties on exit. The named AXMenuItem entries still arrive.",
                   size: "1x1",
                 },
               ]}
@@ -728,101 +719,166 @@ export default function MacosUsePage() {
           </div>
         </section>
 
-        {/* Window selection — second anchor */}
+        {/* Flow diagram */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Window Selection Score Is Also Non-Obvious
+            The Filter Applied To A Single Modification
           </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            The subprocess is the headline fix, but{" "}
-            <span className="font-mono text-sm">
-              captureWindowScreenshot
-            </span>{" "}
-            also does a subtler thing: it picks which window to shoot. Not the
-            largest, not the frontmost, not the first. It iterates every
-            layer-0 window owned by the PID and scores each candidate by its
-            intersection area with the bounds reported in the AX traversal the
-            MCP client just received. The highest-scoring window wins.
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            Each modification follows this path. The order matters: scroll-bar
+            noise is checked first because it short-circuits all downstream
+            work, and text back-fill runs before the structural-noise filter
+            so a cell with recoverable text is not thrown away.
           </p>
           <FlowDiagram
-            title="Choosing the correct window for the screenshot"
+            title="One modification, five gates, one verdict"
             steps={[
-              { label: "CGWindowListCopyWindowInfo", detail: "onScreenOnly" },
-              { label: "filter by PID & layer", detail: "layer == 0" },
-              { label: "intersect with traversal", detail: "rect ∩ twb" },
-              { label: "score = area", detail: "w × h" },
-              { label: "argmax window", detail: "best score" },
-              { label: "fallback: largest", detail: "if no bounds" },
+              { label: "rawDiff.modified", detail: "as macOS emits it" },
+              { label: "scroll-bar?", detail: "substring check" },
+              { label: "coord-only?", detail: "Set<String>" },
+              { label: "text fill", detail: "2 strategies" },
+              { label: "empty structural?", detail: "role + !text" },
+              { label: "EnrichedTraversalDiff", detail: "kept" },
             ]}
           />
-          <p className="text-zinc-500 text-sm mt-6 max-w-2xl">
-            This is why the PNG always matches the AX tree the model is about
-            to reason over, even in apps like Slack or Notes that show dialogs
-            and popovers as separate windows above the main one. The screenshot
-            is pinned to the AX traversal, not to whatever is visually on top.
-          </p>
         </section>
 
-        {/* HorizontalStepper — three failure modes */}
+        {/* Reproduce */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Three Failure Modes, Three Fallbacks
+              Grep The Filter Yourself In A Clean Checkout
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              Every branch in the screenshot path has a defined failure
-              behaviour. The MCP client never sees an exception; it either
-              gets a screenshot path or it does not, and the AX diff is
-              always there.
+              Three commands and the whole pipeline is on screen. Every token
+              resolves to a specific line number.
             </p>
-            <HorizontalStepper
-              steps={[
+            <TerminalOutput
+              title="Verifying the filter on disk"
+              lines={[
                 {
-                  title: "Helper binary missing",
-                  description:
-                    "FileManager.default.fileExists returns false. Logged as warning: captureWindowScreenshot: screenshot-helper not found at <path>. Returns nil. Tool response omits screenshot field.",
+                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
+                  type: "command",
                 },
+                { text: "cd mcp-server-macos-use", type: "command" },
                 {
-                  title: "Helper takes longer than 5.0s",
-                  description:
-                    "group.wait(timeout: deadline) == .timedOut. process.terminate() sends SIGTERM. Warning is logged. Returns nil. The timeout catches stuck ReplayKit initialisation on systems with audio/video permission friction.",
+                  text: "grep -n 'coordinateAttrs' Sources/MCPServer/main.swift",
+                  type: "command",
                 },
+                { text: "649:        let coordinateAttrs: Set<String> = [\"x\", \"y\", \"width\", \"height\"]", type: "output" },
+                { text: "681:            let meaningfulChanges = mod.changes.filter { !coordinateAttrs.contains($0.attributeName) }", type: "output" },
                 {
-                  title: "Helper exits non-zero",
-                  description:
-                    "process.terminationStatus != 0. stderr is forwarded, logged, returns nil. The MCP response still carries the AX tree diff; only the PNG is missing.",
+                  text: "grep -nE 'isScrollBarNoise|isStructuralNoise' Sources/MCPServer/main.swift | head -6",
+                  type: "command",
+                },
+                { text: "592:func isScrollBarNoise(_ role: String) -> Bool {", type: "output" },
+                { text: "600:func isStructuralNoise(_ role: String, text: String?) -> Bool {", type: "output" },
+                { text: "653:            .filter { !isScrollBarNoise($0.role) }", type: "output" },
+                { text: "665:            .filter { !isStructuralNoise($0.role, text: $0.text) }", type: "output" },
+                { text: "679:            if isScrollBarNoise(mod.before.role) || isScrollBarNoise(mod.after.role) { continue }", type: "output" },
+                {
+                  text: "grep -n 'func findTextForElement' Sources/MCPServer/main.swift",
+                  type: "command",
+                },
+                { text: "551:func findTextForElement(_ element: ElementData, in traversal: ResponseData?) -> String? {", type: "output" },
+                {
+                  text: "Three greps, three line numbers, one filter pipeline you can now read end to end.",
+                  type: "success",
                 },
               ]}
             />
           </div>
         </section>
 
-        {/* Marquee — the AX attrs / CGWindow keys used */}
+        {/* Comparison table */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            Filtered Diff vs Raw AX Tree Diff
+          </h2>
+          <ComparisonTable
+            productName="macos-use EnrichedTraversalDiff"
+            competitorName="Raw macOS AX tree diff"
+            rows={[
+              {
+                feature: "Scroll tick inside a long list",
+                ours: "3-6 entries, all semantic",
+                competitor: "30-50 entries, mostly x/y churn",
+              },
+              {
+                feature: "Click that reflows a sidebar",
+                ours: "Only the state changes (selection, enabled, text)",
+                competitor: "Every moved row is a modification",
+              },
+              {
+                feature: "AXRow with empty AXValue",
+                ours: "Text back-filled from children, then evaluated",
+                competitor: "Anonymous entry with no label",
+              },
+              {
+                feature: "AXScrollBar subcomponent movement",
+                ours: "Dropped (isScrollBarNoise)",
+                competitor: "1-4 modifications per scroll event",
+              },
+              {
+                feature: "Empty AXCell in a table refresh",
+                ours: "Dropped (isStructuralNoise)",
+                competitor: "Entry with role and coords, no text",
+              },
+              {
+                feature: "Compact-summary count like '3 added, 2 modified'",
+                ours: "Reflects post-filter, semantic event count",
+                competitor: "Inflated by layout churn",
+              },
+              {
+                feature: "Handling of new AXScrollBarCustomThumb subroles",
+                ours: "Caught automatically via substring match",
+                competitor: "Requires an allow-list update",
+              },
+            ]}
+          />
+        </section>
+
+        {/* Proof banner */}
+        <section className="max-w-4xl mx-auto px-6 py-10">
+          <ProofBanner
+            quote="The three filter passes are not an optimisation, they are the difference between a response the model can act on and a response the model has to parse its way out of."
+            source="Sources/MCPServer/main.swift:648-718"
+            metric="4 attribute names gate the whole pipeline"
+          />
+        </section>
+
+        {/* Marquee , the vocabulary the filter uses */}
         <section className="py-12">
           <div className="max-w-4xl mx-auto px-6 mb-6">
             <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-              The CoreGraphics And Accessibility Keys The Helper Touches
+              The Vocabulary The Filter Knows
             </h2>
             <p className="text-zinc-500">
-              A narrow API surface keeps the blast radius of ReplayKit
-              loading localised. Everything below either runs inside the
-              helper or never pulls the framework at all.
+              These are the exact substrings checked inside isScrollBarNoise
+              and isStructuralNoise, plus the attribute names in
+              coordinateAttrs. Any role or attribute that matches any of these
+              is filtered accordingly.
             </p>
           </div>
           <Marquee speed={30} fade pauseOnHover>
             {[
-              "CGWindowListCopyWindowInfo",
-              "CGWindowListCreateImage",
-              ".optionIncludingWindow",
-              ".boundsIgnoreFraming",
-              ".bestResolution",
-              "kCGWindowOwnerPID",
-              "kCGWindowLayer",
-              "kCGWindowNumber",
-              "kCGWindowBounds",
-              "NSBitmapImageRep",
-              "CGContext(data:)",
-              "AXWindow",
+              "x",
+              "y",
+              "width",
+              "height",
+              "scrollbar",
+              "scroll bar",
+              "value indicator",
+              "page button",
+              "arrow button",
+              "axrow",
+              "outline row",
+              "axcell",
+              "cell",
+              "axcolumn",
+              "column",
+              "axmenu",
+              "menu",
             ].map((name) => (
               <div
                 key={name}
@@ -834,126 +890,11 @@ export default function MacosUsePage() {
           </Marquee>
         </section>
 
-        {/* Reproduce */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Reproduce The Two-Binary Layout In A Clean Checkout
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            A minute, end to end, on any Mac with Xcode command-line tools.
-            The output shows both executables side by side. The comment is
-            grep-able.
-          </p>
-          <TerminalOutput
-            title="Verifying the two targets yourself"
-            lines={[
-              {
-                text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
-                type: "command",
-              },
-              { text: "cd mcp-server-macos-use", type: "command" },
-              {
-                text: "xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift build",
-                type: "command",
-              },
-              { text: "Build complete!", type: "success" },
-              {
-                text: "ls .build/debug | grep -E 'mcp-server-macos-use|screenshot-helper'",
-                type: "command",
-              },
-              { text: "mcp-server-macos-use", type: "output" },
-              { text: "screenshot-helper", type: "output" },
-              {
-                text: "grep -n 'ReplayKit' Sources/MCPServer/main.swift",
-                type: "command",
-              },
-              {
-                text: "383:/// (screenshot-helper) so that the ReplayKit framework — loaded as a side-effect",
-                type: "output",
-              },
-              {
-                text: "384:/// by macOS — dies with the subprocess instead of spinning at ~19% CPU forever",
-                type: "output",
-              },
-              {
-                text: "458:    // Run screenshot-helper in a subprocess — ReplayKit dies when it exits",
-                type: "output",
-              },
-              {
-                text: "wc -l Sources/ScreenshotHelper/main.swift",
-                type: "command",
-              },
-              { text: "     111 Sources/ScreenshotHelper/main.swift", type: "output" },
-              {
-                text: "Two executables on disk, one comment explaining why.",
-                type: "success",
-              },
-            ]}
-          />
-        </section>
-
-        {/* Comparison table */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            macos-use vs In-Process Screenshot
-          </h2>
-          <ComparisonTable
-            productName="macos-use (two-target split)"
-            competitorName="Single-binary CGWindowListCreateImage caller"
-            rows={[
-              {
-                feature: "Idle CPU after first screenshot",
-                ours: "Baseline (framework not loaded in server)",
-                competitor: "~19% sustained (ReplayKit never unloads)",
-              },
-              {
-                feature: "Can enforce a hard timeout",
-                ours: "Yes — Process.terminate() after 5.0s",
-                competitor: "No — in-process CGImage calls can't be cancelled",
-              },
-              {
-                feature: "Crosshair drawing in the server",
-                ours: "No — drawn in the helper via CGContext",
-                competitor: "Yes — pulls AppKit drawing into the server",
-              },
-              {
-                feature: "Swap for ScreenCaptureKit",
-                ours: "Rewrite 111 lines of helper, untouched server",
-                competitor: "Restructure the server's frame handling",
-              },
-              {
-                feature: "Failure surface",
-                ours: "Screenshot nil, AX diff still delivered",
-                competitor: "Screenshot thread can stall or leak",
-              },
-              {
-                feature: "Window selection by AX traversal overlap",
-                ours: "Yes — max intersection score with traversalWindowBounds",
-                competitor: "Usually largest-window heuristic",
-              },
-              {
-                feature: "Lines needed in the server",
-                ours: "134 lines for captureWindowScreenshot + launch",
-                competitor: "Similar lines + indefinite CPU tax",
-              },
-            ]}
-          />
-        </section>
-
-        {/* Proof banner */}
-        <section className="max-w-4xl mx-auto px-6 py-10">
-          <ProofBanner
-            quote="The second binary is not a micro-service and not a sandbox. It is a lifetime boundary. ReplayKit lives inside it and nowhere else, which is the only reason the MCP server's idle CPU stays flat."
-            source="main.swift:382-385 + Sources/ScreenshotHelper"
-            metric="1 process exit = 1 framework unload"
-          />
-        </section>
-
         {/* InlineCta */}
         <section className="max-w-4xl mx-auto px-6 py-10">
           <InlineCta
-            heading="Point macos-use at any scroll-heavy or dialog-heavy app"
-            body="The server gives you a bounded, reliable PNG plus an AX tree diff for every click, type, and press. The two-binary layout is invisible to your MCP client: it just sees a screenshot path in the response summary. Clone the repo, build with swift build, and wire it into Claude Desktop or Cursor the normal way."
+            heading="Wire macos-use into Claude Desktop and watch the diffs"
+            body="Once installed, every click_and_traverse, scroll_and_traverse, and type_and_traverse response will carry a compact summary line with filtered counts. Grep /tmp/macos-use/ for the flat files to see the full traversal. The difference between the inline summary and the file is exactly what the filter pipeline removed."
             linkText="Install from npm"
             href="https://www.npmjs.com/package/mcp-server-macos-use"
           />
@@ -965,23 +906,25 @@ export default function MacosUsePage() {
         {/* Final CTA */}
         <section className="max-w-4xl mx-auto px-6 py-16 text-center">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Read Package.swift.
+            The filter is 70 lines. Go read it.
           </h2>
           <p className="text-zinc-500 mb-8 max-w-xl mx-auto">
-            Thirty-one lines. Two{" "}
-            <span className="font-mono text-sm">.executableTarget</span>{" "}
-            entries. The one on the bottom is the entire reason the CPU graph
-            is flat.
+            From the{" "}
+            <span className="font-mono text-sm">let coordinateAttrs</span>{" "}
+            declaration at line 649 to the{" "}
+            <span className="font-mono text-sm">EnrichedTraversalDiff</span>{" "}
+            assignment at line 714, this is the part of macos-use that decides
+            what your model actually reads.
           </p>
-          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Package.swift">
-            Open Package.swift on GitHub
+          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L648">
+            Open buildToolResponse on GitHub
           </ShimmerButton>
         </section>
 
         <StickyBottomCta
-          description="macos-use ships two binaries because CGWindowListCreateImage loads ReplayKit into the caller and it never leaves"
-          buttonLabel="Read the helper"
-          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift"
+          description="macos-use filters coordinate-only changes, scroll-bar roles, and empty AXRow/AXCell before your model sees the diff"
+          buttonLabel="Read the filter"
+          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L648"
         />
       </article>
     </>
