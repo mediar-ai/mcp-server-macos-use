@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { SeoComponentsStyles } from "@seo/components/server";
+import { HeadingAnchors } from "@seo/components";
+import { SiteSidebar } from "@/components/site-sidebar";
+import { GuideChat } from "@/components/guide-chat";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,7 +21,14 @@ export default function RootLayout({
     <html lang="en">
       <body className="bg-white text-zinc-900 antialiased">
         <SeoComponentsStyles />
-        {children}
+        <div className="flex min-h-screen">
+          <SiteSidebar />
+          <main className="flex-1 min-w-0">
+            <HeadingAnchors />
+            {children}
+          </main>
+          <GuideChat />
+        </div>
       </body>
     </html>
   );
