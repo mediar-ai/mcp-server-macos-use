@@ -31,9 +31,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "How To Control Someone's Screen On FaceTime: The AI-Observer Workflow Where Your Cursor Never Leaves Home";
+  "How To Control Someone's Screen On FaceTime When The Viewer Can't See Your Cursor: The Accessibility-Tree Diff That Narrates For Them";
 const DESCRIPTION =
-  "As of iOS 18 and macOS 15 FaceTime ships native remote control, but it hands the cursor to the remote party. macos-use offers the opposite pattern: the remote person narrates, an AI on your Mac executes, and every disruptive tool call snapshots your mouse cursor plus frontmost app at engage (Sources/MCPServer/main.swift:1669-1676) and restores both at disengage (main.swift:1767-1781), even in the Esc-cancelled branch (main.swift:1847-1861). The SharePlay viewer sees the action land and your cursor teleport back to where you left it.";
+  "Top SERP answers hand the cursor to the remote viewer. That's one workflow. This page is about the other: the remote viewer narrates, an AI on your Mac runs mcp-server-macos-use, and after every click the server returns a flat-text diff of the accessibility tree ('# diff: +N added, -N removed, ~N modified' at main.swift:1008) plus a paired .txt and .png receipt at /tmp/macos-use/. The remote viewer's AI reads the diff lines, not the SharePlay pixels. No squinting at video frames to tell if the Send button went from disabled to enabled.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -47,9 +47,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Control someone's screen on FaceTime, the snap-back way",
+    title: "Control someone's screen on FaceTime, narrated from an AX diff",
     description:
-      "Apple's built-in FaceTime remote control gives the cursor to the remote person. macos-use keeps the cursor with you: snapshot on engage, restore on disengage, even on Esc cancel.",
+      "Every mcp-server-macos-use tool call returns a +/-/~ accessibility-tree diff plus a .txt and .png receipt in /tmp/macos-use/. The remote viewer's AI reads the diff, not the SharePlay pixels.",
   },
 };
 
@@ -67,52 +67,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "FaceTime got remote control in iOS 18 and macOS 15. Why would I pick a local-MCP pattern over that?",
-    a: "Different trust model. Apple's built-in remote control hands the cursor and keyboard over to the remote party; it is limited to contacts, blocks Apple Pay and Face ID changes, and is not available in the EU. For a support call where the remote person has to touch the UI, use it. The local-MCP pattern is for a different job: the remote person narrates what they want done, an AI on your Mac executes, and your cursor never leaves its starting position. You get an AI auditor between narration and action, and the call does not depend on Apple Account contacts. The anchor code is main.swift:1671 (snapshot) and main.swift:1767-1781 (restore).",
+    q: "What exactly does the accessibility-tree diff look like in the response file?",
+    a: "Three blocks under a header. The header is 'diff: +N added, -N removed, ~N modified' written at main.swift:1008. Added elements print with a plus prefix at main.swift:1014 ('+ [AXButton (button)] \"Send\" x:820 y:612 w:60 h:28'). Removed elements print with a minus prefix at main.swift:1017. Modified elements print with a tilde prefix at main.swift:1026 in the shape '~ [AXButton] \"Send\" | AXEnabled: \\'false\\' -> \\'true\\''. The full response is written to /tmp/macos-use/<timestamp>_<tool>.txt so you can grep it later.",
   },
   {
-    q: "What exactly gets snapshotted at the start of each tool call, and where is the code?",
-    a: "Two things, on one if-branch. main.swift:1670 checks isDisruptive (true for click, type, press, scroll, open; false for refresh_traversal at main.swift:1667). If disruptive, main.swift:1671 reads NSWorkspace.shared.frontmostApplication into savedFrontmostApp, main.swift:1672 reads NSEvent.mouseLocation, and main.swift:1674 converts it to the global CGEvent coordinate space via CGPoint(x: nsPos.x, y: primaryScreen.frame.height - nsPos.y). Both snapshots are stored as locals declared outside the do-block at main.swift:1479-1480 so the catch branch can still see them. Nothing is stored in InputGuard itself; the handler owns the snapshot.",
+    q: "Why is that format good for the remote viewer on FaceTime instead of just watching the video?",
+    a: "SharePlay encodes at roughly 30fps and compresses text aggressively. Small UI state changes, like a disabled button going to enabled or a label swap from 'Send' to 'Sending…', are routinely lost to compression blur. The diff is unambiguous: the exact element role, the exact before and after text, the AXEnabled change. The remote viewer's AI reads 'AXButton Send changed AXEnabled false -> true' and narrates 'the Send button is enabled now' without ever inspecting a video frame.",
   },
   {
-    q: "Where exactly does the restore happen, and what CGEvent type does it use?",
-    a: "Lines main.swift:1767-1772 build a CGEvent with mouseEventSource set to nil, mouseType .mouseMoved, mouseCursorPosition the saved point, and post it via moveEvent.post(tap: .cghidEventTap). The nil source causes the CGEventSource to default to hidSystemState, which gives the event a non-zero eventSourceStateID. That non-zero ID is exactly what InputGuard's own tap checks at InputGuard.swift:329-331 to decide whether to pass or block. So the restore event passes through InputGuard's filter as if it were the AI itself moving the cursor, even if InputGuard is momentarily still engaged. The frontmost-app restore at main.swift:1775-1781 uses prevApp.activate(options: []) on the stored NSRunningApplication.",
+    q: "Which tools return a diff and which return a full traversal?",
+    a: "The switch is inside buildToolResponse at main.swift:612 on the hasDiff flag. hasDiff is true for click, type, press, scroll — the four that mutate UI state. open_application and refresh_traversal return a full traversal instead, written out by the branch at main.swift:720-722. So the diff format is specific to mutation calls, which is the useful case during a FaceTime session. You do not need a full dump of the accessibility tree after every click, just what changed.",
   },
   {
-    q: "What happens to the restore if I press Esc mid-automation?",
-    a: "The same restore runs a second time, in the InputGuardCancelled catch. main.swift:1847 catches is InputGuardCancelled, line 1850 forces InputGuard.shared.disengage(), main.swift:1852-1856 re-posts the mouseMoved CGEvent with the saved position, and main.swift:1858-1859 calls prevApp.activate(options: []) with the saved app. The cursor still lands at the saved location, the previous app still comes back on top, and the tool returns an isError response reading 'Cancelled: user pressed Esc to abort'. Two branches, one invariant: cursor and focus always return to the pre-engage snapshot.",
+    q: "Where does the red crosshair in the screenshot come from?",
+    a: "ScreenshotHelper/main.swift:70-85. After CGWindowListCreateImage captures the frontmost window, ScreenshotHelper draws a 2pt red stroke crosshair with 15pt arms centered at lastClickPoint, plus a 10pt radius circle around it. The click coordinates are passed from main.swift:1839 via the --click-point flag on the helper subprocess. lastClickPoint is set per-call at the click_and_traverse handler site, so the PNG shows where the cursor landed even though the cursor itself has already snapped back.",
   },
   {
-    q: "Why does the cursor restore matter specifically for FaceTime SharePlay?",
-    a: "SharePlay captures the entire compositor frame the window server builds, so the remote viewer sees the actual hardware cursor position in real time. If you are narrating 'can you click the Send button in Mail', the naive approach leaves the cursor hovering over the Send button after the click, which is visually confusing because the remote viewer can no longer tell what you would click next on your own. The snap-back moves the cursor to exactly where you left it before the action. The SharePlay frame shows an action land, then the cursor teleport home. Feels like a slideshow, not a takeover.",
+    q: "Where does the .txt file come from and how is it named?",
+    a: "main.swift:1825-1829. The handler builds a timestamp in milliseconds ('Int(Date().timeIntervalSince1970 * 1000)'), strips the 'macos-use_' prefix from the tool name, and writes the response to '/tmp/macos-use/<ts>_<toolname>.txt'. The screenshot at main.swift:1834-1839 reuses the same timestamp so the .txt and .png names match. If you collect five clicks in one call they will be 1713456789012_click_and_traverse.txt through 1713456792512_click_and_traverse.txt, each paired with its own PNG.",
   },
   {
-    q: "Is the restore visible to the remote FaceTime viewer as a cursor jump, or does it look smooth?",
-    a: "It is a jump. A .mouseMoved CGEvent posted once with an explicit position does not interpolate; the cursor teleports to that coordinate on the next compositor frame. At 30fps SharePlay encoding that is one or two frames of visible motion. On the receiving side it reads as a deliberate reset, which is the intent: the remote viewer should read the movement as 'automation finished' and start narrating the next step. No tween, no easing, no trail.",
+    q: "Does filtering remove noise from the diff, or is every accessibility change surfaced?",
+    a: "Filtering happens in buildToolResponse at main.swift:648-718. Scroll-bar elements are dropped by isScrollBarNoise (main.swift:591). Structural containers like AXRow, AXCell, AXColumn, AXMenu without text are dropped by isStructuralNoise at main.swift:600-607. Coordinate-only changes (x, y, width, height attributes) are filtered out of modified entries at main.swift:681-682. What you are left with is role + text + the semantic attribute that flipped, which is exactly what narrates well.",
   },
   {
-    q: "What if the action itself opens a new app and I want focus to stay on it, not get yanked back?",
-    a: "The restore is gated by a freshness check. main.swift:1776-1780 reads currentFrontmost via NSWorkspace.shared.frontmostApplication and only calls prevApp.activate(options: []) if currentFrontmost?.processIdentifier != prevApp.processIdentifier. But any activate on a newly-launched app still pulls focus away. The cross-app handoff detection at main.swift:1788-1808 is the counter-balance: if the action made a different app frontmost, the handler re-traverses the new app's accessibility tree first and attaches it as appSwitchTraversal, so the caller sees the new state before focus restoration flips it back. For workflows where you want the new app to stay frontmost, run refresh_traversal (non-disruptive, skips the whole snapshot/restore path at main.swift:1670).",
+    q: "What does 'text_changes' mean in the compact summary the MCP client actually sees?",
+    a: "The tool returns a short summary to the MCP client, with the full diff written to the .txt file. The summary at main.swift:838-857 collects up to three modified elements whose changed attribute is 'text' or 'AXValue' and prints them as 'text_changes:' followed by 'old' -> 'new' lines. That is the terse signal the AI reads first. If it wants more, the 'file:' line tells it where to grep. The hint line at main.swift:761 even shows the grep command: 'hint: grep -n AXButton <filepath>'.",
   },
   {
-    q: "What does the stderr log look like during one snap-back cycle?",
-    a: "Four log lines bracket the cycle. 'handler(CallTool): saved cursor (x,y) and frontmost app Name (PID N)' prints at main.swift:1675 when the snapshot lands. 'InputGuard: engaging' and 'InputGuard: engaged — tap active, overlay visible' print next. The action runs. After disengage, 'handler(CallTool): restored cursor to (x,y)' prints at main.swift:1771 and 'handler(CallTool): restored focus to Name (PID N)' prints at main.swift:1779 if activation actually fired. Grep for 'saved cursor' and 'restored cursor' in stderr during a FaceTime session to confirm the pair ran; the timestamps tell you the whole cycle took well under a second for a simple click.",
+    q: "Can the remote viewer or their AI read the .txt file directly?",
+    a: "Only the host's AI can. The .txt and .png live in /tmp/macos-use/ on the host machine. The MCP client (running on the host) sees the summary, then can shell out to read the full file if it decides to. The remote viewer sees neither; they see the host AI's narration and the SharePlay video feed. The receipt pair is for the host: it is what they hand a teammate, an auditor, or a bug report after the call to say 'this is exactly what happened'.",
   },
   {
-    q: "How does this compare to what Apple's FaceTime remote control actually does to your cursor?",
-    a: "Apple's remote control pushes the remote party's cursor movements into your CGEvent stream; your cursor follows wherever the remote person moves. There is no snap-back. Exit the control session and the cursor stays wherever the remote dropped it. The tradeoff is Apple's path lets the remote person drive directly, which is good for support and bad for audit. macos-use's path keeps the cursor pinned to your local intent across the whole call, at the cost of needing an AI in the middle to interpret narration. Same keyword, opposite property.",
+    q: "Does the diff tell you if the action silently opened a different app?",
+    a: "Yes, via the cross-app handoff section at main.swift:1788-1808. If hasDiff is true and the frontmost app PID changed from the one passed to the tool, the handler sets toolResponse.appSwitchPid and re-traverses the new frontmost app. The .txt file then appends a second 'app_switch:' header followed by the new app's element list (main.swift:1031-1036). The summary includes 'app_switch: <App> (PID: N) is now frontmost'. So the AI narrates 'that click launched Mail, here is its new window'.",
   },
   {
-    q: "Does the snap-back interfere with the screenshot the server writes to /tmp/macos-use?",
-    a: "No, the screenshot happens before the restore completes from the caller's perspective but after it functionally landed. captureWindowScreenshot at main.swift:1839 launches the screenshot-helper subprocess, which calls CGWindowListCreateImage for the chosen window ID. The cursor position does not affect window capture; the PNG shows the window pixels, not the cursor, and the crosshair annotation drawn by ScreenshotHelper/main.swift:70-85 is placed at lastClickPoint (the original click coordinates), not at wherever the cursor is at capture time. So the screenshot shows the click landed, the accessibility diff shows the UI response, and the real cursor is already back home by the time the tool returns.",
+    q: "What if the click did nothing — is the diff empty or is there a default message?",
+    a: "buildDiffSummary at main.swift:888-894 returns 'No changes.' when all three arrays are empty, and that string is appended to the one-line summary. So a click that landed on a non-interactive element, or an AXButton that did not change state, produces a response like 'Clicked at (420, 300). No changes.' and the .txt file has the header '# diff: +0 added, -0 removed, ~0 modified' followed by a blank element section. The AI can read that and narrate 'nothing happened, try a different spot'.",
   },
   {
-    q: "Can I reproduce the snap-back locally without FaceTime, to verify the behavior?",
-    a: "Yes. Start your MCP client with mcp-server-macos-use attached. Move your mouse to a distinctive corner (say, top-left). Then call macos-use_click_and_traverse with coordinates near the opposite corner. Watch the cursor: it flicks to the click point, the action fires, the cursor snaps back to top-left. Grep /tmp/macos-use for the latest timestamped .txt and the stderr log for 'saved cursor' / 'restored cursor'. Try it again with Esc held during the overlay window and you should still see the restore log because the catch branch at main.swift:1852-1856 re-runs it.",
+    q: "Why both a .txt and a .png instead of just one? Isn't the diff enough?",
+    a: "The diff describes the post-click world in accessibility terms. The PNG describes where the click physically landed in pixel terms, with the red crosshair showing the exact coordinate. Most of the time you only need the diff. But when an action does nothing, the PNG is the tiebreaker: you can see the crosshair fell on a disabled area, or missed the target, or landed on an overlay you did not know was there. Two formats, two angles on the same event.",
   },
   {
-    q: "Is there any cleanup skipped if the process crashes mid-call?",
-    a: "Yes, the restore is in-process. If mcp-server-macos-use SIGKILLs during a tool call, the cursor stays wherever the last CGEvent moved it and the frontmost app is whatever the OS decided to activate next. The InputGuard overlay is owned by an NSWindow in the same process, so it dies with the server. The CGEventTap dies too, which means hardware input passes through again. The 30-second watchdog at InputGuard.swift:172-181 is the in-process fallback; there is no out-of-process supervisor. If your risk model includes 'the MCP server hard-crashes mid-call', keep FaceTime's SharePlay video running so you can see the state and hit Cmd+Tab manually.",
+    q: "Can I clear the receipt files, or will /tmp/macos-use grow forever?",
+    a: "Nothing in the server prunes them. /tmp is cleared by macOS on reboot and by periodic launchd tasks (typically anything untouched for 3 days). For a single FaceTime session you will accumulate on the order of tens to low-hundreds of file pairs. If you need to keep them, copy /tmp/macos-use/ somewhere persistent before rebooting. If you want them gone sooner, 'rm -rf /tmp/macos-use/*' between calls is safe — the directory is recreated by main.swift:1823 before the next write.",
   },
 ];
 
@@ -132,85 +132,85 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const snapshotCode = `// Sources/MCPServer/main.swift:1669-1676
-// Snapshot at the top of every disruptive tool call.
-// The locals are declared at main.swift:1479-1480 so the InputGuardCancelled
-// catch branch further down can still read them for the cancel-path restore.
+const diffFormatCode = `// Sources/MCPServer/main.swift:1007-1028
+// The flat-text response the handler writes to
+// /tmp/macos-use/<timestamp>_<tool>.txt.
+// The AI reads these lines. The remote FaceTime viewer does not need to
+// see the SharePlay video to know what happened — the diff is structured.
 
-// --- Save frontmost app + cursor before disruptive actions ---
-if isDisruptive {
-    savedFrontmostApp = NSWorkspace.shared.frontmostApplication
-
-    let nsPos = NSEvent.mouseLocation                     // Cocoa coords (bottom-left origin)
-    if let primaryScreen = NSScreen.screens.first {
-        // Flip to CGEvent coords (top-left origin) so we can .post later
-        savedCursorPos = CGPoint(
-            x: nsPos.x,
-            y: primaryScreen.frame.height - nsPos.y
-        )
-        fputs("log: handler(CallTool): saved cursor \\(savedCursorPos!) and frontmost app '\\(savedFrontmostApp?.localizedName ?? "nil")' (PID \\(savedFrontmostApp?.processIdentifier ?? 0))\\n", stderr)
+if let diff = toolResponse.diff {
+    lines.append("# diff: +\\(diff.added.count) added, -\\(diff.removed.count) removed, ~\\(diff.modified.count) modified")
+    if toolResponse.sheetDetected == true {
+        lines.append("# dialog: AXSheet detected")
     }
+    lines.append("")
 
-    InputGuard.shared.engage(message: "AI: \\(toolDesc) — press Esc to cancel")
-}`;
-
-const restoreCode = `// Sources/MCPServer/main.swift:1766-1781
-// Success-path restore. Runs after the action returned AND after
-// InputGuard was disengaged, but before the flat-text response is written.
-// The CGEvent uses a nil source (defaults to hidSystemState, stateID != 0),
-// which is exactly what InputGuard's own tap at InputGuard.swift:329-331
-// lets through. So if InputGuard is still briefly active, the restore
-// still lands.
-
-// --- Restore cursor position ---
-if let pos = savedCursorPos,
-   let moveEvent = CGEvent(
-       mouseEventSource: nil,
-       mouseType: .mouseMoved,
-       mouseCursorPosition: pos,
-       mouseButton: .left
-   ) {
-    moveEvent.post(tap: .cghidEventTap)
-    fputs("log: handler(CallTool): restored cursor to \\(pos)\\n", stderr)
-}
-
-// --- Restore frontmost app focus ---
-if isDisruptive, let prevApp = savedFrontmostApp, prevApp.isTerminated == false {
-    let currentFrontmost = NSWorkspace.shared.frontmostApplication
-    if currentFrontmost?.processIdentifier != prevApp.processIdentifier {
-        prevApp.activate(options: [])
-        fputs("log: handler(CallTool): restored focus to '\\(prevApp.localizedName ?? "")' (PID \\(prevApp.processIdentifier))\\n", stderr)
+    for el in diff.added {
+        lines.append(formatElementLine(el, prefix: "+ "))
+    }
+    for el in diff.removed {
+        lines.append(formatElementLine(el, prefix: "- "))
+    }
+    for mod in diff.modified {
+        var changeParts: [String] = []
+        for change in mod.changes {
+            let old = change.oldValue ?? change.removedText ?? ""
+            let new = change.newValue ?? change.addedText ?? ""
+            changeParts.append("\\(change.attributeName): '\\(old)' -> '\\(new)'")
+        }
+        lines.append("~ [\\(mod.after.role)] \\"\\(mod.after.text ?? "")\\" | \\(changeParts.joined(separator: ", "))")
     }
 }`;
 
-const cancelCode = `// Sources/MCPServer/main.swift:1847-1861
-// Cancel-path restore. This is the whole reason savedFrontmostApp and
-// savedCursorPos are declared OUTSIDE the do-block: so this catch can
-// still see them after InputGuardCancelled unwinds through Task boundaries.
-// Same two operations as the success path, condensed.
+const crosshairCode = `// Sources/ScreenshotHelper/main.swift:70-85
+// The red crosshair + circle drawn on every screenshot at the
+// click point. This is what survives in /tmp/macos-use/<ts>_<tool>.png
+// after the cursor has already snapped back.
 
-} catch is InputGuardCancelled {
-    fputs("log: handler(CallTool): user cancelled tool '\\(params.name)' via Esc\\n", stderr)
-    InputGuard.shared.disengage()
+// Red crosshair
+ctx.setStrokeColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+ctx.setLineWidth(2.0 * max(scaleX, scaleY))
 
-    // Restore cursor
-    if let pos = savedCursorPos,
-       let moveEvent = CGEvent(
-           mouseEventSource: nil,
-           mouseType: .mouseMoved,
-           mouseCursorPosition: pos,
-           mouseButton: .left
-       ) {
-        moveEvent.post(tap: .cghidEventTap)
-    }
+let armLength: CGFloat = 15 * max(scaleX, scaleY)
+ctx.move(to: CGPoint(x: drawX - armLength, y: drawY))
+ctx.addLine(to: CGPoint(x: drawX + armLength, y: drawY))
+ctx.move(to: CGPoint(x: drawX, y: drawY - armLength))
+ctx.addLine(to: CGPoint(x: drawX, y: drawY + armLength))
+ctx.strokePath()
 
-    // Restore frontmost app
-    if let prevApp = savedFrontmostApp, !prevApp.isTerminated {
-        prevApp.activate(options: [])
-    }
-    return .init(
-        content: [.text("Cancelled: user pressed Esc to abort '\\(params.name)'.")],
-        isError: true
+// Circle around crosshair
+ctx.setLineWidth(1.5 * max(scaleX, scaleY))
+let radius: CGFloat = 10 * max(scaleX, scaleY)
+ctx.addEllipse(in: CGRect(x: drawX - radius, y: drawY - radius,
+                          width: radius * 2, height: radius * 2))
+ctx.strokePath()`;
+
+const receiptPairCode = `// Sources/MCPServer/main.swift:1821-1840
+// The receipt pair: one .txt with the full diff, one .png with the crosshair.
+// Both use the same timestamp so they align on disk and in the summary.
+
+let outputDir = "/tmp/macos-use"
+try? FileManager.default.createDirectory(atPath: outputDir,
+                                         withIntermediateDirectories: true)
+
+let timestamp = Int(Date().timeIntervalSince1970 * 1000)  // ms, avoids collisions
+let safeName = params.name.replacingOccurrences(of: "macos-use_", with: "")
+let filename = "\\(timestamp)_\\(safeName).txt"
+let filepath = "\\(outputDir)/\\(filename)"
+try? resultTextString.write(toFile: filepath, atomically: true, encoding: .utf8)
+fputs("log: handler(CallTool): wrote full response to \\(filepath) (\\(resultTextString.count) bytes)\\n", stderr)
+
+// --- Capture window screenshot ---
+var screenshotPath: String? = nil
+let screenshotFilename = "\\(timestamp)_\\(safeName).png"
+let screenshotFilepath = "\\(outputDir)/\\(screenshotFilename)"
+let screenshotPid = toolResponse.appSwitchPid ?? toolResponse.traversalPid ?? options.pidForTraversal
+if let pid = screenshotPid {
+    screenshotPath = captureWindowScreenshot(
+        pid: pid,
+        outputPath: screenshotFilepath,
+        clickPoint: lastClickPoint,                 // crosshair lands here
+        traversalWindowBounds: toolResponse.windowBounds
     )
 }`;
 
@@ -223,7 +223,6 @@ export default function HowToControlFaceTimePage() {
       />
 
       <article className="bg-white min-h-screen">
-        {/* Hero */}
         <BackgroundGrid pattern="dots" glow>
           <div className="max-w-4xl mx-auto px-6 pt-20 pb-16">
             <Breadcrumbs items={breadcrumbItems} />
@@ -232,300 +231,286 @@ export default function HowToControlFaceTimePage() {
                 FaceTime SharePlay + MCP
               </span>
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
-                cursor never leaves home
+                structured diff, not pixels
               </span>
               <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                snapshot + restore, twice
+                .txt + .png receipt per call
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              How To Control Someone&apos;s Screen On FaceTime Without{" "}
-              <GradientText>Handing Over The Cursor</GradientText>: The
-              Snap-Back Pattern Inside macos-use
+              How To Control Someone&apos;s Screen On FaceTime When{" "}
+              <GradientText>The Viewer Cannot See Your Cursor</GradientText>:
+              The Accessibility-Tree Diff That Narrates Every Click
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Since iOS 18 and macOS 15 FaceTime has had native remote control.
-              It works, and for a support call where the remote person needs
-              to touch the UI, use it. This page is about the opposite workflow.
-              The remote viewer narrates, an AI on your Mac executes, and your
-              cursor snaps back to exactly where you left it after every action.
-              The code that makes that true is a pair of snapshot and restore
-              blocks in main.swift that run twice per tool call, once in the
-              success branch and once in the Esc-cancelled branch.
+              Apple&apos;s native FaceTime remote control (iOS 18, macOS 15) is one
+              workflow. The other workflow keeps the cursor with the host, puts an
+              AI in the middle, and lets the remote viewer narrate. The piece that
+              makes the narration work is not the video feed. It is the flat-text
+              accessibility-tree diff mcp-server-macos-use writes after every
+              disruptive tool call: one line per added, removed, or modified element,
+              with attribute-level before and after. The diff plus a PNG with a red
+              crosshair at the click point survive on disk as a per-call receipt.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
               author="macos-use maintainers"
-              readingTime="10 min read"
+              readingTime="11 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1669">
-                Read snapshot at main.swift:1669
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1007">
+                Read the diff format at main.swift:1007
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1767"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift#L70"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Restore at main.swift:1767
+                Crosshair at ScreenshotHelper:70
               </a>
             </div>
           </div>
         </BackgroundGrid>
 
-        {/* Proof band */}
         <ProofBand
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Snapshot cursor + frontmost app on every disruptive tool call",
-            "Restore both on success at main.swift:1767-1781",
-            "Same restore runs in the Esc-cancelled catch at main.swift:1852-1860",
+            "Per-call AX diff: '# diff: +N added, -N removed, ~N modified' at main.swift:1008",
+            "Modified lines carry attribute-level before -> after at main.swift:1024",
+            "Paired .txt + .png receipt in /tmp/macos-use/ per call at main.swift:1821-1839",
           ]}
         />
 
-        {/* Remotion hero clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="Two snapshots. Two restores. One very quiet cursor."
-            subtitle="Why an AI-driven FaceTime session looks nothing like a TeamViewer session"
+            title="The remote viewer isn't watching the video. Their AI is reading your diff."
+            subtitle="Why an AI-narrated FaceTime screen-control session leans on text, not pixels"
             captions={[
-              "Before: cursor sits wherever you left it",
-              "Engage: snapshot cursor + frontmost app",
-              "Act: AI posts CGEvents, UI responds",
-              "Disengage: cursor teleports home, previous app returns",
-              "Esc cancels? Same restore runs in the catch branch",
+              "Host clicks via macos-use_click_and_traverse",
+              "Server returns +/-/~ diff of the AX tree",
+              "Summary + .txt file + .png with red crosshair",
+              "Remote viewer's AI reads the diff, narrates out loud",
+              "Receipt pair lives in /tmp/macos-use/ after the call",
             ]}
             accent="teal"
           />
         </section>
 
-        {/* SERP gap section */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The SERP Assumes You Want To Hand Over The Cursor. There Is A
-            Second Workflow.
+            The SERP Thinks You Want Someone Else Driving Your Cursor
           </h2>
           <p className="text-zinc-600 mb-4">
-            Search the keyword and the first page is dominated by Apple Support
-            articles describing FaceTime&apos;s built-in remote control
-            (iOS 18, macOS 15, contacts-gated, not available in the EU), plus
-            a ring of blog posts explaining how to use it or fall back to Zoom,
-            TeamViewer, Anydesk, or Screen Sharing.app. They all solve the same
-            problem: getting the remote person&apos;s cursor onto your Mac.
+            Search the keyword and every top result tells you to use FaceTime&apos;s
+            built-in remote control, Zoom remote control, TeamViewer, Anydesk, or
+            macOS Screen Sharing. Different products, same workflow: the remote
+            person moves your cursor directly. That workflow has its place (support
+            calls where the remote expert has to touch the UI) and Apple&apos;s
+            native feature is pretty good on iOS 18 and macOS 15, outside the EU.
           </p>
           <p className="text-zinc-600 mb-8">
-            That is one workflow. The other is: the remote person never gets
-            the cursor, an AI sits between their narration and your machine,
-            and the cursor stays pinned to your local intent across the whole
-            call. Both have legitimate use cases. Only the first is in the SERP.
+            This page is about the workflow they miss. The remote person never
+            gets the cursor. An AI on your Mac does, via mcp-server-macos-use. The
+            remote person talks, the AI acts, and after every action the AI
+            narrates what changed. The question that workflow raises is: how does
+            the remote person know the click worked? The answer is not the
+            SharePlay video feed. It is the accessibility-tree diff written to the
+            server&apos;s flat-text response.
           </p>
           <BeforeAfter
-            title="Two different contracts with the remote party"
+            title="Two ways to know what happened after a click"
             before={{
-              label: "Remote-takes-the-wheel (FaceTime / Zoom / TeamViewer)",
+              label: "Visual narration (watch the SharePlay frame)",
               content:
-                "Apple FaceTime remote control (iOS 18 / macOS 15) or Zoom / TeamViewer / Screen Sharing.app: the remote person moves your cursor directly. When they stop, the cursor sits wherever they left it. No auditor between narration and action.",
+                "The remote viewer watches the compressed 30fps SharePlay stream and tries to spot the change. A Send button going from disabled to enabled is often one or two pixels of gray shift, easily lost to H.264 blocking. A label swapping from 'Send' to 'Sending…' can survive a compression pass or not. Narration depends on visual acuity and luck.",
               highlights: [
-                "Remote party controls the cursor",
-                "Cursor stays wherever the remote drops it",
-                "No AI reviewing the request first",
-                "Contacts-gated, EU-blocked, or trust-required",
+                "Relies on what the encoder preserved",
+                "Small state flips are often invisible",
+                "No persistent record after the call",
+                "Cursor position muddies the signal",
               ],
             }}
             after={{
-              label: "Remote-narrates (macos-use local MCP)",
+              label: "Structural narration (read the AX diff)",
               content:
-                "macos-use local MCP + FaceTime SharePlay: the remote person narrates, the AI runs macos-use_click_and_traverse on your Mac, and the snap-back at main.swift:1767-1781 puts your cursor back home after every action. Same restore runs if you hit Esc mid-call.",
+                "The remote viewer's AI reads '# diff: +0 added, -0 removed, ~1 modified' followed by '~ [AXButton] \"Send\" | AXEnabled: false -> true'. The flip is unambiguous. The summary line also carries 'text_changes:' for any text / AXValue changes. The full diff is grep-able on the host at /tmp/macos-use/<ts>_<tool>.txt.",
               highlights: [
-                "Host keeps the cursor end to end",
-                "Cursor restored to pre-action position",
-                "AI and host review before anything clicks",
-                "Works over any plain FaceTime call",
+                "Structured: role, text, attribute, old -> new",
+                "Unaffected by video compression",
+                "Survives the call as a .txt + .png pair",
+                "AI can narrate in one sentence: 'Send just enabled'",
               ],
             }}
           />
         </section>
 
-        {/* The anchor proof banner */}
         <section className="max-w-4xl mx-auto px-6 py-8">
           <ProofBanner
-            quote="The cursor restore uses CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: savedCursorPos).post(tap: .cghidEventTap), with a nil source so the event carries a non-zero eventSourceStateID and passes InputGuard's own tap. The same two operations run in the success branch and in the InputGuardCancelled catch."
-            source="Sources/MCPServer/main.swift:1767-1772 and main.swift:1852-1856"
-            metric="2 restore paths"
+            quote={`The response file opens with '# diff: +N added, -N removed, ~N modified' at main.swift:1008. Modified lines use the exact shape '~ [AXButton] "Send" | AXEnabled: \\'false\\' -> \\'true\\'' at main.swift:1024-1026. The paired PNG at /tmp/macos-use/<ts>_<tool>.png carries a 15pt red crosshair and a 10pt circle at lastClickPoint, drawn by ScreenshotHelper/main.swift:70-85. Both files survive the FaceTime call as a per-action receipt.`}
+            source="Sources/MCPServer/main.swift and Sources/ScreenshotHelper/main.swift"
+            metric="1 .txt + 1 .png per call"
           />
         </section>
 
-        {/* Sequence diagram */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            One Tool Call, Framed From The Remote Viewer&apos;s Seat
-          </h2>
-          <p className="text-zinc-600 mb-6">
-            Four participants: the remote FaceTime viewer, your FaceTime
-            (broadcasting SharePlay), your AI client running an MCP session,
-            and mcp-server-macos-use on your machine. The snapshot and restore
-            are both local to the last actor; neither the remote viewer nor
-            FaceTime ever see or touch the saved cursor position.
-          </p>
-          <SequenceDiagram
-            title="Snap-back cycle, actor by actor"
-            actors={["Remote viewer", "Your FaceTime", "AI client", "macos-use MCP"]}
-            messages={[
-              { from: 0, to: 1, label: "watches SharePlay video", type: "event" },
-              { from: 0, to: 2, label: "narrates: click Send", type: "request" },
-              { from: 2, to: 3, label: "click_and_traverse(pid, x, y)", type: "request" },
-              { from: 3, to: 3, label: "save NSEvent.mouseLocation + frontmostApplication", type: "event" },
-              { from: 3, to: 3, label: "InputGuard.engage(), overlay pill appears", type: "event" },
-              { from: 3, to: 1, label: "CGEvent click posts, UI responds", type: "event" },
-              { from: 3, to: 3, label: "InputGuard.disengage(), overlay hides", type: "event" },
-              { from: 3, to: 1, label: "mouseMoved CGEvent -> cursor teleports home", type: "event" },
-              { from: 3, to: 1, label: "savedFrontmostApp.activate() -> previous app returns", type: "event" },
-              { from: 1, to: 0, label: "SharePlay frame: action landed, cursor back at origin", type: "response" },
-              { from: 3, to: 2, label: "compact summary + .txt + .png", type: "response" },
-              { from: 2, to: 0, label: "AI narrates what changed", type: "response" },
-            ]}
-          />
-        </section>
-
-        {/* The snapshot code */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Snapshot Block, Verbatim
+            One Tool Call, Three Outputs
           </h2>
           <p className="text-zinc-600 mb-6">
-            The snapshot fires only on disruptive tools. refresh_traversal is
-            flagged non-disruptive at main.swift:1667 and bypasses this block,
-            because it does not inject input and does not need to restore
-            anything. The cursor position is flipped from Cocoa&apos;s
-            bottom-left origin to CGEvent&apos;s top-left origin right here,
-            so the restore can skip any coordinate math later.
-          </p>
-          <AnimatedCodeBlock
-            code={snapshotCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
-          />
-        </section>
-
-        {/* Channel diagram */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Where The Saved Position Lives Across The Tool Call
-          </h2>
-          <p className="text-zinc-600 mb-6">
-            savedCursorPos and savedFrontmostApp are declared at
-            main.swift:1479-1480, outside the do-block. That placement is
-            load-bearing: the InputGuardCancelled catch on line 1847 needs
-            to see them after an exception has unwound through Task and
-            @MainActor boundaries. If they were scoped inside the do, the
-            cancel branch would have no restore to run.
+            Every disruptive tool call (click, type, press, scroll) produces the
+            same three artifacts. The compact summary is what the MCP client sees
+            inline. The .txt file is the full diff for grep. The .png is the
+            crosshair receipt. They are all keyed to the same millisecond
+            timestamp so you can pair them up after the call.
           </p>
           <AnimatedBeam
-            title="One snapshot, three consumers"
+            title="One call, three receipts"
             from={[
-              { label: "NSEvent.mouseLocation", sublabel: "at engage time" },
-              { label: "NSWorkspace.frontmostApplication", sublabel: "at engage time" },
+              { label: "macos-use_click_and_traverse", sublabel: "(pid, x, y)" },
+              { label: "macos-use_type_and_traverse", sublabel: "(pid, text)" },
+              { label: "macos-use_press_key_and_traverse", sublabel: "(pid, key)" },
+              { label: "macos-use_scroll_and_traverse", sublabel: "(pid, deltaY)" },
             ]}
-            hub={{ label: "handler locals", sublabel: "main.swift:1479-1480" }}
+            hub={{ label: "CallTool handler", sublabel: "main.swift:1474" }}
             to={[
-              { label: "Success restore", sublabel: "main.swift:1767-1781" },
-              { label: "Esc-cancel restore", sublabel: "main.swift:1852-1860" },
-              { label: "Log lines in stderr", sublabel: "saved cursor / restored cursor" },
+              { label: "Compact summary (MCP reply)", sublabel: "buildCompactSummary, ~30 lines" },
+              { label: "/tmp/macos-use/<ts>_<tool>.txt", sublabel: "full +/-/~ AX diff" },
+              { label: "/tmp/macos-use/<ts>_<tool>.png", sublabel: "window shot + red crosshair" },
             ]}
           />
         </section>
 
-        {/* The restore code */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Success-Branch Restore, Verbatim
+            The Diff Block, Verbatim From main.swift
           </h2>
           <p className="text-zinc-600 mb-6">
-            Two operations: post a .mouseMoved CGEvent with the saved
-            coordinates, and call prevApp.activate(options: []) if the saved
-            app is still alive and is not already frontmost. The freshness
-            check at main.swift:1777 avoids a redundant activation when the
-            action did not actually switch apps, which keeps the stderr log
-            honest.
+            Three loops, one header. Added elements print with a plus prefix,
+            removed with a minus, modified with a tilde. The interesting case is
+            the modified loop. Every changed attribute becomes one '&lt;name&gt;:
+            old -&gt; new' fragment, joined by commas, tail-appended after a pipe.
+            That is the shape the AI reads to narrate; it is also the shape a
+            human reader can scan to answer &ldquo;did the click do anything?&rdquo;
           </p>
           <AnimatedCodeBlock
-            code={restoreCode}
+            code={diffFormatCode}
             language="swift"
             filename="Sources/MCPServer/main.swift"
           />
         </section>
 
-        {/* The cancel branch */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Why The Esc Branch Is Not A Different Story
+            What The Remote Viewer Actually Hears On The Call
           </h2>
           <p className="text-zinc-600 mb-6">
-            If you press Esc mid-automation, InputGuard.swift:345-349 sets
-            _cancelled and throws InputGuardCancelled via throwIfCancelled at
-            one of the four check points inside the handler. The unwind lands
-            in the catch on main.swift:1847. Same two lines run: mouseMoved
-            CGEvent with the saved position, prevApp.activate with the saved
-            app. Whether the tool call succeeded, failed, or was cancelled
-            mid-sequence, the exit contract is identical: cursor and focus
-            end where they started.
+            Step by step, here is the loop a single &ldquo;click the Send
+            button&rdquo; request runs through. The remote viewer is on the far
+            side of a FaceTime call, SharePlay is active, and the host has
+            mcp-server-macos-use wired into an MCP client. Nothing in this loop
+            depends on what the remote viewer sees in the video feed.
           </p>
-          <AnimatedCodeBlock
-            code={cancelCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
-          />
-        </section>
-
-        {/* Comparison table */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Against The Top SERP Answers, Row By Row
-          </h2>
-          <ComparisonTable
-            productName="macos-use local MCP + FaceTime SharePlay"
-            competitorName="Apple FaceTime remote control (iOS 18 / macOS 15)"
-            rows={[
+          <StepTimeline
+            steps={[
               {
-                feature: "Remote party moves your cursor",
-                ours: "no, host keeps the cursor",
-                competitor: "yes, that is the feature",
+                title: "Remote viewer narrates: 'click Send'",
+                description:
+                  "Voice or text from the remote side of the FaceTime call. The host forwards it to the MCP client. FaceTime carries no input from the remote side in this workflow.",
+                detail:
+                  "Apple remote control is off. The only input channel into the Mac is the host's own keyboard into the AI client. The remote viewer is a narrator, not a driver.",
               },
               {
-                feature: "Cursor restored to pre-action position",
-                ours: "yes, main.swift:1767-1772",
-                competitor: "no, stays wherever the remote dropped it",
+                title: "AI picks a tool and calls it",
+                description:
+                  "The MCP client issues macos-use_click_and_traverse with (pid, element: 'Send'). The handler at main.swift:1474 resolves the element, runs the click, and builds the diff via buildToolResponse at main.swift:612.",
+                detail:
+                  "hasDiff is true for click/type/press/scroll (main.swift:1518-1519). That flag determines the branch at main.swift:648 that returns a diff instead of a full traversal.",
               },
               {
-                feature: "Esc cancel restores cursor and focus too",
-                ours: "yes, main.swift:1852-1860",
-                competitor: "no equivalent",
+                title: "Server filters noise out of the diff",
+                description:
+                  "Scroll-bar elements are dropped by isScrollBarNoise at main.swift:591. Structural containers without text (AXRow, AXCell, AXColumn, AXMenu) are dropped by isStructuralNoise at main.swift:600-607. Coordinate-only modified entries are dropped at main.swift:681-682.",
+                detail:
+                  "What is left is role + text + the semantic attribute that flipped. That is the useful signal for narration; everything else is layout churn the AI would have to ignore anyway.",
               },
               {
-                feature: "Required relationship with the remote party",
-                ours: "none, any FaceTime contact",
-                competitor: "saved in your contacts, device version gate",
+                title: "Server writes the receipt pair",
+                description:
+                  "main.swift:1827-1829 writes the flat-text response to /tmp/macos-use/<timestamp>_<tool>.txt. main.swift:1834-1839 launches the screenshot-helper subprocess to capture the window and draw the crosshair, writing the PNG with the same timestamp.",
+                detail:
+                  "Both paths are printed in the compact summary. The AI can shell out and grep the .txt for more detail; the host can open the .png after the call to verify the click landed where they meant.",
               },
               {
-                feature: "Available in the European Union",
-                ours: "yes, no regional gate",
-                competitor: "no, feature not available",
+                title: "AI narrates from the summary",
+                description:
+                  "The summary lines 'summary: Clicked element Send. 0 added, 0 removed, 1 modified.' and 'text_changes:' feed the AI's response: 'Okay, Send fired. The button is greyed out now and the composer is empty.' The remote viewer hears that, not video interpretation.",
+                detail:
+                  "The AI reads the .txt with grep -n 'AXButton' <filepath> (the hint at main.swift:761 spells the command out) when the summary is not enough.",
               },
               {
-                feature: "AI reviewer between narration and action",
-                ours: "yes, the MCP client",
-                competitor: "no, input passes straight through",
-              },
-              {
-                feature: "Per-action audit artifact",
-                ours: "yes, /tmp/macos-use/*.txt + .png with crosshair",
-                competitor: "no, session is unlogged",
+                title: "After the call, the pair is your audit trail",
+                description:
+                  "Every action taken during the call left a .txt + .png in /tmp/macos-use/. Timestamps are in milliseconds so ordering is preserved. If something went wrong, you can reconstruct exactly what the AI clicked, where the cursor was, and what the accessibility tree reported afterward.",
+                detail:
+                  "/tmp is wiped on reboot and by launchd after ~3 days. If you need long-term audit, copy /tmp/macos-use/ to persistent storage before ending the session.",
               },
             ]}
           />
         </section>
 
-        {/* Metrics row */}
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            A Real Diff Response, Line By Line
+          </h2>
+          <p className="text-zinc-600 mb-6">
+            What the AI sees when it reads /tmp/macos-use/&lt;ts&gt;_click_and_traverse.txt
+            after a click on the Send button in Mail. The header counts, the
+            modified block carries the AXEnabled flip and the text swap, the
+            added block surfaces a spinner that appeared in the toolbar.
+          </p>
+          <TerminalOutput
+            title="/tmp/macos-use/1713456789012_click_and_traverse.txt"
+            lines={[
+              { type: "output", text: "# diff: +1 added, -0 removed, ~2 modified" },
+              { type: "output", text: "" },
+              { type: "output", text: "+ [AXImage (image)] \"sending indicator\" x:824 y:60 w:14 h:14 visible" },
+              { type: "output", text: "~ [AXButton] \"Send\" | AXEnabled: 'true' -> 'false'" },
+              { type: "output", text: "~ [AXTextArea] \"\" | AXValue: 'Hey — ship it' -> ''" },
+              { type: "command", text: "grep -n 'AXButton' /tmp/macos-use/1713456789012_click_and_traverse.txt" },
+              { type: "output", text: "3:~ [AXButton] \"Send\" | AXEnabled: 'true' -> 'false'" },
+            ]}
+          />
+        </section>
+
+        <section className="py-10 border-t border-b border-zinc-100">
+          <Marquee speed={40} pauseOnHover>
+            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
+              # diff: +N added, -N removed, ~N modified
+            </span>
+            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
+              + [AXButton] &quot;Send&quot;
+            </span>
+            <span className="mx-8 px-4 py-2 bg-zinc-100 text-zinc-700 rounded-full text-sm font-medium whitespace-nowrap">
+              - [AXTextField] &quot;draft&quot;
+            </span>
+            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
+              ~ AXEnabled: &apos;false&apos; -&gt; &apos;true&apos;
+            </span>
+            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
+              isScrollBarNoise filter
+            </span>
+            <span className="mx-8 px-4 py-2 bg-zinc-100 text-zinc-700 rounded-full text-sm font-medium whitespace-nowrap">
+              isStructuralNoise filter
+            </span>
+            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
+              .txt + .png share a ms timestamp
+            </span>
+            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
+              red crosshair at lastClickPoint
+            </span>
+          </Marquee>
+        </section>
+
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
             By The Numbers
@@ -534,209 +519,202 @@ export default function HowToControlFaceTimePage() {
             <GlowCard>
               <div className="p-6 text-center">
                 <div className="text-4xl font-bold text-teal-600">
+                  <NumberTicker value={3} />
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  diff prefixes: + added, - removed, ~ modified
+                </div>
+              </div>
+            </GlowCard>
+            <GlowCard>
+              <div className="p-6 text-center">
+                <div className="text-4xl font-bold text-teal-600">
                   <NumberTicker value={2} />
                 </div>
                 <div className="mt-2 text-sm text-zinc-500">
-                  restore paths per tool call (success, Esc-cancelled)
+                  files per call: .txt diff + .png crosshair
                 </div>
               </div>
             </GlowCard>
             <GlowCard>
               <div className="p-6 text-center">
                 <div className="text-4xl font-bold text-teal-600">
-                  <NumberTicker value={200} suffix="ms" />
+                  <NumberTicker value={15} suffix="pt" />
                 </div>
                 <div className="mt-2 text-sm text-zinc-500">
-                  grace window before cancellation check at main.swift:1757
+                  crosshair arm length at ScreenshotHelper:74
                 </div>
               </div>
             </GlowCard>
             <GlowCard>
               <div className="p-6 text-center">
                 <div className="text-4xl font-bold text-teal-600">
-                  <NumberTicker value={30} suffix="s" />
+                  <NumberTicker value={4} />
                 </div>
                 <div className="mt-2 text-sm text-zinc-500">
-                  watchdog auto-disengage at InputGuard.swift:172-181
-                </div>
-              </div>
-            </GlowCard>
-            <GlowCard>
-              <div className="p-6 text-center">
-                <div className="text-4xl font-bold text-teal-600">
-                  <NumberTicker value={0} />
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  times the remote FaceTime viewer&apos;s input reaches your
-                  CGEvent queue
+                  AX roles filtered as structural noise
                 </div>
               </div>
             </GlowCard>
           </div>
         </section>
 
-        {/* Step timeline */}
-        <section className="max-w-4xl mx-auto px-6 py-12">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            What Actually Happens On The Call, Step By Step
-          </h2>
-          <StepTimeline
-            steps={[
-              {
-                title: "Start FaceTime, hit Share Screen",
-                description:
-                  "Click Share Screen from the FaceTime menu-bar extra. The remote viewer sees your full display as a SharePlay video feed.",
-                detail:
-                  "SharePlay captures the compositor output, so anything the window server draws, they see. Including the InputGuard overlay when it appears.",
-              },
-              {
-                title: "AI client connects to mcp-server-macos-use",
-                description:
-                  "Claude Desktop, Cursor, or any MCP-compatible agent with the server wired in via stdio. The AI now has access to macos-use_click_and_traverse, type_and_traverse, press_key_and_traverse, scroll_and_traverse, open_application_and_traverse.",
-                detail:
-                  "All five of those are flagged disruptive at main.swift:1667 and trigger the snapshot. refresh_traversal is the only tool that skips it.",
-              },
-              {
-                title: "Remote viewer narrates, you forward it to the AI",
-                description:
-                  "The remote person speaks or types what they want clicked, opened, typed. You hand it to the AI client as a message. The AI decides which tool, which parameters.",
-                detail:
-                  "The only input channel into your Mac is your own keyboard typing into the AI client. FaceTime carries no input back. Apple remote control is off.",
-              },
-              {
-                title: "Snapshot fires before the tool runs",
-                description:
-                  "main.swift:1671 reads the frontmost app, main.swift:1672-1674 captures and flips the cursor position into CGEvent coordinates. Both get stored in handler locals declared at main.swift:1479-1480.",
-                detail:
-                  "The flip from Cocoa's bottom-left to CGEvent's top-left happens here, on the capture side, so the restore can post with no math.",
-              },
-              {
-                title: "InputGuard engages, action runs, disengages",
-                description:
-                  "Overlay pill appears, CGEvents post, UI responds. Press Esc any time to cancel; that unwinds to the catch branch which runs its own copy of the restore.",
-                detail:
-                  "InputGuard's own tap uses the eventSourceStateID trick (InputGuard.swift:329-331) to let the MCP's programmatic events through while blocking hardware, except plain Esc.",
-              },
-              {
-                title: "Restore: cursor teleports home, previous app returns",
-                description:
-                  "main.swift:1767-1772 posts the mouseMoved CGEvent with the saved position. main.swift:1775-1781 calls prevApp.activate(options: []) if the saved app is still alive and is not already frontmost.",
-                detail:
-                  "On the SharePlay stream the remote viewer sees the UI change land, then the cursor flick back to where it was. One or two frames of movement. No cleanup artifacts.",
-              },
-            ]}
-          />
-        </section>
-
-        {/* Terminal output */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            stderr During One Complete Snap-Back Cycle
+            The Receipt Pair, Written On One Timestamp
           </h2>
           <p className="text-zinc-600 mb-6">
-            Every snapshot and every restore writes a timestamped log line. If
-            you want to prove the cycle ran, grep stderr for &quot;saved
-            cursor&quot; and &quot;restored cursor&quot; during a live FaceTime
-            session.
+            The .txt and .png share the same ms-precision timestamp by
+            construction, not by coincidence. Both filenames are built at
+            main.swift:1827 and main.swift:1834 from the single timestamp
+            captured at main.swift:1825. So sorting /tmp/macos-use/ by name is
+            sorting by chronological order, and the pair is always adjacent.
           </p>
-          <TerminalOutput
-            title="click_and_traverse with a successful snap-back"
-            lines={[
-              { type: "command", text: "log: handler(CallTool): saved cursor (124.0, 812.0) and frontmost app 'Messages' (PID 1284)" },
-              { type: "output", text: "log: InputGuard: engaging — AI: Clicking in app… — press Esc to cancel" },
-              { type: "output", text: "log: InputGuard: CGEventTap created on main run loop, enabled=true" },
-              { type: "output", text: "log: InputGuard: overlay shown (fullscreen)" },
-              { type: "output", text: "log: InputGuard: engaged — tap active, overlay visible" },
-              { type: "output", text: "log: handler(CallTool): executing performAction on MainActor via Task..." },
-              { type: "output", text: "log: handler(CallTool): performAction task completed." },
-              { type: "output", text: "log: InputGuard: throwIfCancelled — wasCancelled=false" },
-              { type: "output", text: "log: InputGuard: disengaging" },
-              { type: "output", text: "log: InputGuard: CGEventTap destroyed" },
-              { type: "output", text: "log: InputGuard: overlay hidden" },
-              { type: "success", text: "log: handler(CallTool): restored cursor to (124.0, 812.0)" },
-              { type: "success", text: "log: handler(CallTool): restored focus to 'Messages' (PID 1284)" },
-              { type: "output", text: "log: handler(CallTool): wrote full response to /tmp/macos-use/1713456789012_click_and_traverse.txt (4821 bytes)" },
-              { type: "output", text: "log: captureWindowScreenshot: selected window 3142 (score=864000)" },
-              { type: "output", text: "log: captureWindowScreenshot: launching screenshot-helper for window 3142..." },
+          <AnimatedCodeBlock
+            code={receiptPairCode}
+            language="swift"
+            filename="Sources/MCPServer/main.swift"
+          />
+        </section>
+
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Crosshair, Verbatim
+          </h2>
+          <p className="text-zinc-600 mb-6">
+            The crosshair is a separate binary (ScreenshotHelper) so the main
+            server never links against Quartz drawing paths it does not otherwise
+            need. The helper reads --click-point from argv, captures the window
+            with CGWindowListCreateImage, then draws a red 2pt stroke through
+            the point with a 10pt circle around it. The point is scaled into
+            image space via scaleX and scaleY computed from the window rect at
+            ScreenshotHelper:55-58.
+          </p>
+          <AnimatedCodeBlock
+            code={crosshairCode}
+            language="swift"
+            filename="Sources/ScreenshotHelper/main.swift"
+          />
+        </section>
+
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            One Call, Four Actors, Framed Around The Diff
+          </h2>
+          <p className="text-zinc-600 mb-6">
+            The remote FaceTime viewer, the host&apos;s FaceTime (sharing the
+            screen), the host&apos;s AI client (running MCP), and
+            mcp-server-macos-use. Notice how the diff flows left-to-right and
+            the video flows right-to-left. They are independent channels.
+          </p>
+          <SequenceDiagram
+            title="Click -> diff -> narration, by actor"
+            actors={["Remote viewer", "Host FaceTime", "AI client", "macos-use MCP"]}
+            messages={[
+              { from: 0, to: 1, label: "watches SharePlay video", type: "event" },
+              { from: 0, to: 2, label: "narrates: click Send", type: "request" },
+              { from: 2, to: 3, label: "click_and_traverse(pid, element: 'Send')", type: "request" },
+              { from: 3, to: 3, label: "InputGuard.engage + CGEvent click", type: "event" },
+              { from: 3, to: 3, label: "buildToolResponse, hasDiff=true", type: "event" },
+              { from: 3, to: 3, label: "filter scrollbar + structural noise", type: "event" },
+              { from: 3, to: 3, label: "write .txt + .png to /tmp/macos-use", type: "event" },
+              { from: 3, to: 2, label: "compact summary + file path + screenshot path", type: "response" },
+              { from: 2, to: 2, label: "optionally: read .txt to grep details", type: "event" },
+              { from: 2, to: 0, label: "narrates: 'Send fired, button greyed out'", type: "response" },
+              { from: 1, to: 0, label: "SharePlay catches up in 1-2 frames", type: "event" },
             ]}
           />
         </section>
 
-        {/* Marquee */}
-        <section className="py-10 border-t border-b border-zinc-100">
-          <Marquee speed={40} pauseOnHover>
-            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
-              NSEvent.mouseLocation -&gt; savedCursorPos
-            </span>
-            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
-              Cocoa to CGEvent coord flip at snapshot time
-            </span>
-            <span className="mx-8 px-4 py-2 bg-zinc-100 text-zinc-700 rounded-full text-sm font-medium whitespace-nowrap">
-              CGEvent(mouseEventSource: nil) -&gt; stateID != 0
-            </span>
-            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
-              moveEvent.post(tap: .cghidEventTap)
-            </span>
-            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
-              prevApp.activate(options: [])
-            </span>
-            <span className="mx-8 px-4 py-2 bg-zinc-100 text-zinc-700 rounded-full text-sm font-medium whitespace-nowrap">
-              freshness check before activate
-            </span>
-            <span className="mx-8 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm font-medium whitespace-nowrap">
-              Esc catch re-runs the same two lines
-            </span>
-            <span className="mx-8 px-4 py-2 bg-cyan-50 text-cyan-700 rounded-full text-sm font-medium whitespace-nowrap">
-              locals at main.swift:1479-1480 survive the unwind
-            </span>
-          </Marquee>
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            Against The Top SERP Workflows, Row By Row
+          </h2>
+          <ComparisonTable
+            productName="macos-use MCP + FaceTime SharePlay"
+            competitorName="FaceTime remote control / Zoom / TeamViewer"
+            rows={[
+              {
+                feature: "Who drives the cursor",
+                ours: "the AI on the host, never the remote",
+                competitor: "the remote person, directly",
+              },
+              {
+                feature: "How the remote party knows a click landed",
+                ours: "structured AX diff narrated by the AI",
+                competitor: "their own eyes on the pixel stream",
+              },
+              {
+                feature: "Click evidence after the call",
+                ours: ".txt + .png pair in /tmp/macos-use/",
+                competitor: "none by default",
+              },
+              {
+                feature: "Works without Apple contacts relationship",
+                ours: "yes, any FaceTime call works",
+                competitor: "remote control requires contacts",
+              },
+              {
+                feature: "Available in the EU",
+                ours: "yes, no regional gate",
+                competitor: "FaceTime remote control: no",
+              },
+              {
+                feature: "State changes invisible to video compression",
+                ours: "captured in the diff (AXEnabled, AXValue)",
+                competitor: "often lost to H.264 blocking",
+              },
+              {
+                feature: "Grep-able audit trail per action",
+                ours: "main.swift:761 prints the grep command",
+                competitor: "screen recording, if you remembered",
+              },
+            ]}
+          />
         </section>
 
-        {/* Bento grid */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            Which Variant Of The Keyword Are You Actually Searching?
+            Why The Pair Matters, By Situation
           </h2>
           <BentoGrid
             cards={[
               {
-                title: "You want the remote person to click your Mac",
+                title: "The click seemed to do nothing on SharePlay",
                 description:
-                  "Use FaceTime&apos;s built-in remote control on iOS 18 or macOS 15, or fall back to Apple Screen Sharing.app. Stop reading this page. The snap-back pattern is the wrong tool for a support session.",
+                  "Grep the .txt for the tool name's last entry. If the diff says '0 added, 0 removed, 0 modified', the click really did nothing. If it says '1 modified', the UI changed but your viewer missed the pixel shift. Open the .png to see exactly where the crosshair landed.",
                 size: "2x1",
               },
               {
-                title: "You want narrated AI control, cursor stays home",
+                title: "You want to file a repro for a flaky app",
                 description:
-                  "This is the page for you. Read the snapshot and restore code sections. The two blocks at main.swift:1669-1781 are the whole story.",
+                  "Zip /tmp/macos-use/<ts>*.txt and <ts>*.png for the affected call range. You now have a timeline of accessibility state + click crosshairs for every action, no screen recording needed.",
                 size: "1x1",
               },
               {
-                title: "You are in the EU and the native feature is blocked",
+                title: "The remote viewer is on a bad connection",
                 description:
-                  "FaceTime remote control is not available in the European Union. The local-MCP pattern has no regional gate because it uses your own CGEventTap, your own MCP server, and no Apple service.",
+                  "SharePlay may be dropping to a few fps. That does not matter. The diff is already on the wire from your AI client; the narration does not depend on the video reaching them cleanly.",
                 size: "1x1",
               },
               {
-                title: "You want an auditor between the narration and the click",
+                title: "A click silently launched another app",
                 description:
-                  "The AI client is the auditor. It reads the narration, picks the tool, and its call is visible to you before it runs. The /tmp/macos-use/*.txt artifact records what landed.",
+                  "main.swift:1788-1808 detects the cross-app handoff, re-traverses the new frontmost app, and appends 'app_switch:' to the .txt. Your AI narrates 'that opened Mail, here is its window' without waiting for the video feed to resolve.",
                 size: "2x1",
               },
             ]}
           />
         </section>
 
-        {/* FAQ */}
         <section className="max-w-4xl mx-auto px-6 py-16 border-t border-zinc-100">
           <FaqSection items={faqItems} />
         </section>
 
-        {/* Closing CTA */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <InlineCta
-            heading="Open the two code blocks on GitHub and read the lines yourself"
-            body="The snapshot is 8 lines. The success restore is 16 lines. The cancel restore is 15 lines. All of it lives in Sources/MCPServer/main.swift, open source, MIT-licensed, no accounts, no telemetry."
+            heading="Read the diff format, the receipt-pair writer, and the crosshair drawer in one sitting"
+            body="Three spots, total under 60 lines: main.swift:1007-1028 for the +/-/~ format, main.swift:1821-1840 for the .txt + .png pair, and ScreenshotHelper/main.swift:70-85 for the red crosshair. All open source, MIT-licensed, no accounts, no telemetry."
             linkText="Browse the repo on GitHub"
             href="https://github.com/mediar-ai/mcp-server-macos-use"
           />
