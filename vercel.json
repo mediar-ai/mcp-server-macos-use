@@ -1,0 +1,4 @@
+{
+  "installCommand": "npm install --ignore-scripts --force",
+  "buildCommand": "next build"
+}
