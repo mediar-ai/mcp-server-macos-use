@@ -13,17 +13,15 @@ import {
   Marquee,
   AnimatedCodeBlock,
   TerminalOutput,
+  SequenceDiagram,
   StepTimeline,
-  FlowDiagram,
   AnimatedChecklist,
   MetricsRow,
   ComparisonTable,
   GlowCard,
   BentoGrid,
-  BeforeAfter,
   ProofBanner,
   InlineCta,
-  StickyBottomCta,
   articleSchema,
   breadcrumbListSchema,
   faqPageSchema,
@@ -34,9 +32,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: How The MCP Server Picks The Right Window When An App Owns Five";
+  "macos-use: How The MCP Server Catches The Frontmost App Switching Mid-Tool-Call";
 const DESCRIPTION =
-  "When a macOS app has a Sparkle update dialog, a print sheet, an inspector panel, and two document windows all at once, CGWindowListCopyWindowInfo returns every one of them. macos-use does not pick the biggest. It scores each CGWindow against the accessibility tree's reported AXWindow rect using CGRect.intersection area, and only the winning windowID crosses into the screenshot-helper subprocess. The scoring loop lives in Sources/MCPServer/main.swift lines 386 through 433.";
+  "When a click opens a link in a browser, or a keypress triggers Cmd+Tab, or a save dialog pushes a different app to the front, the PID your agent thought it was driving is now behind a new window. macos-use detects this inside the same tool call at Sources/MCPServer/main.swift:1786-1809, re-runs the accessibility traversal against the new frontmost PID, and attaches both the original diff and the new app's full tree under a single app_switch section. The model reads one response that describes two apps.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -50,9 +48,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: multi-window screenshots by intersection area",
+    title: "macos-use: cross-app handoff detection inside a single MCP tool call",
     description:
-      "CGWindowListCopyWindowInfo returns every window for a PID. macos-use scores each one against the AX traversal's AXWindow rect and screenshots the winner. Read main.swift:412-418.",
+      "Your click opens Chrome. Your Cmd+Return sends a Mail message and a save sheet takes focus. macos-use notices and traverses the new frontmost PID before the response returns.",
   },
 };
 
@@ -70,52 +68,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "Where exactly does macos-use choose which window to screenshot, and what is the scoring rule?",
-    a: "The selection loop is in captureWindowScreenshot at Sources/MCPServer/main.swift:386-433. For every CGWindow reported by CGWindowListCopyWindowInfo, it filters out windows whose ownerPID does not match the target PID and whose kCGWindowLayer is not 0 (line 403-404), so menu bar extras and dock items are ignored from the start. For each surviving window it computes a score: if the caller passed a traversalWindowBounds CGRect, score is the area of rect.intersection(twb), falling back to zero if the intersection is null (main.swift:412-415). If no traversal bounds were passed, score defaults to rect.width * rect.height (line 417). The targetWindowID variable tracks the highest score seen, and that ID is the only one that gets passed to the screenshot-helper subprocess.",
+    q: "What exactly triggers the cross-app handoff detection, and where is the code?",
+    a: "Every diff-producing tool (click, type, press, scroll) sets hasDiff = true. After the primary action returns and the response has been built, the CallTool handler reaches main.swift:1788 which reads 'if hasDiff, let originalPid = options.pidForTraversal'. That originalPid is the PID the caller asked to drive. On the next line, main.swift:1789 reads NSWorkspace.shared.frontmostApplication?.processIdentifier. If those two values differ, the handler treats the action as a cross-app handoff. The whole block is 25 lines, main.swift:1786-1809, and it fires inside the same tool invocation, before the MCP response is serialized.",
   },
   {
-    q: "What does traversalWindowBounds actually point at, and where does it come from?",
-    a: "It is the CGRect of the AXWindow reported by the accessibility tree for the current tool call. getAllWindowBoundsFromTraversal at main.swift:297-305 walks response.elements looking for role == AXWindow and returns each one's x, y, width, height as a CGRect. For screenshot selection the caller picks the main window (or the sheet window if AXSheet is detected), packages it as the traversalWindowBounds argument, and hands it to captureWindowScreenshot. Because the traversal was taken moments before the screenshot, the rect is live: if the window moved, the intersection metric still lands on the right CGWindow because both values describe the same point in time.",
+    q: "Why is detecting an app switch important in practice?",
+    a: "Because agents keep holding onto stale PIDs. Imagine the model calls click_and_traverse on a Mail message that contains a link; the click opens Chrome. Without handoff detection the tool returns a diff of the Mail window (which now contains no new elements relative to before, because the link just left the window), the model sees no change, tries to click the same coordinates, and its CGEvent posts to a Chrome window that happens to cover the point. It hits the wrong target and fails in a hard-to-debug way. Handoff detection writes an app_switch section that tells the model the frontmost app is now Chrome, here is its PID, here are its elements, continue from there.",
   },
   {
-    q: "Why not just pick the largest window?",
-    a: "Three reasons, each observable in real apps. One: a Sparkle update dialog is a smaller window that sits on top of the main app, and it owns focus; picking the largest window screenshots the wrong surface. Two: an Xcode-style app has multiple document windows, inspector panels, and organizer windows open at once, all owned by the same PID, and the user might have clicked in any of them. Three: Print and Save sheets are sometimes reported as separate CGWindows and are always smaller than the document they belong to. Intersection area is a geometry test, not a heuristic. It always picks the window the AX traversal is describing, which is the window the tool call is acting on.",
+    q: "Does the handoff detection re-run the traversal on the new PID, or does it just name the app?",
+    a: "It re-runs the traversal. main.swift:1797-1803 calls traverseAccessibilityTree(pid: newPid) inside a @MainActor Task (AX calls must run on the main actor) and then enriches the result with window bounds using the same getWindowBoundsFromTraversal -> getWindowBoundsFromAPI fallback chain the primary traversal uses. The full ResponseData for the new app is stored as toolResponse.appSwitchTraversal. The flat-text file the MCP client reads contains the original diff for the old PID plus every element of the new PID under a '# app_switch: <Name> (PID: N)' header (main.swift:1030-1037).",
   },
   {
-    q: "What happens if CGWindowListCopyWindowInfo does not return any window that overlaps the traversal bounds?",
-    a: "Score stays at zero for every candidate, targetWindowID stays nil, and the function returns nil at main.swift:430-433 with the log line 'no on-screen window found for PID'. The calling tool handler still returns its normal MCP response; the screenshot field is simply omitted. This is correct behavior: a zero-overlap situation usually means the app minimized, became hidden, or spawned its window off-screen between the traversal and the screenshot, and a screenshot of the wrong window would mislead the model more than no screenshot at all.",
+    q: "What does the screenshot look like when the frontmost app changes?",
+    a: "The PNG is of the new app, not the old one. main.swift:1837 reads 'let screenshotPid = toolResponse.appSwitchPid ?? toolResponse.traversalPid ?? options.pidForTraversal', which resolves to the new PID when appSwitchPid is set. captureWindowScreenshot is then called with that PID and the new window's bounds. This is important: the click annotation (the red crosshair at the click point) is drawn in the coordinate space of the NEW window, which is where the click actually landed visually after the app switch. An old-app screenshot would show the crosshair hovering over whatever is now behind Chrome.",
   },
   {
-    q: "How is this different from how most macOS automation tools pick a window?",
-    a: "Most tools either call AXUIElementCopyAttributeValue(app, AXMainWindow) and trust whatever comes back, or they loop CGWindowListCopyWindowInfo and take the first entry whose ownerPID matches. AXMainWindow is wrong when a sheet or dialog has focus, because focus and 'main' are different concepts on macOS. First-match is wrong because the list order is not specified by Apple. macos-use uses both data sources: AX gives it the right rect, CGWindow gives it the right windowID for CGWindowListCreateImage, and the intersection scoring is the bridge. If AX is unavailable for some reason, getAllWindowBoundsFromAPI at main.swift:308-314 queries the accessibility API directly for AXWindows as a second source.",
+    q: "What exactly appears in the flat text response file?",
+    a: "For a click that causes an app switch, the file at /tmp/macos-use/<timestamp>_click_and_traverse.txt contains four sections in order. One: the '# diff' header with +added, -removed, ~modified lines for the ORIGINAL PID's traversal (the old app, which may be empty if the action just moved focus away). Two: any primaryActionError or traversalError lines. Three: a blank line. Four: a '# app_switch: <AppName> (PID: N)' header followed by every element of the new frontmost window, written in the same 'formatElementLine' format the rest of the traversal uses. The builder is at main.swift:1030-1037; grep for 'app_switch:' in the file to jump straight to the new app's elements.",
   },
   {
-    q: "Does the filter on kCGWindowLayer drop anything important?",
-    a: "Only non-application chrome. Layer 0 is the normal application window layer. Higher layers cover menu bar extras (layer 25), dock windows, status items, menu popups, and various overlay surfaces. None of them are valid screenshot targets for an agent that is acting on the app itself. If macos-use ever gets a tool that screenshots the menu bar (it currently does not), the filter would need a separate predicate.",
+    q: "How does this interact with the frontmost-app restore logic?",
+    a: "It does not, because the restore logic runs before the detection runs. main.swift:1775-1781 tries to restore focus to savedFrontmostApp (the app that was frontmost BEFORE the tool call), but only if savedFrontmostApp is still alive and not already frontmost. If the action itself made a different app frontmost and the user did not want the tool to change focus, the restore kicks the new app back to the background. If the user's intent was 'click this link, then describe the resulting page', the savedFrontmostApp check still runs but the detection captures the new app's state before focus changes back, so the app_switch traversal is still correct even if focus flips back.",
   },
   {
-    q: "The screenshot has a red crosshair at the click point. How is that drawn so it lands on the right window and not the wrong one?",
-    a: "captureWindowScreenshot passes the winning window's bounds dict as --bounds alongside the clickPoint in the helper arguments (main.swift:448-453). The screenshot-helper subprocess in Sources/ScreenshotHelper/main.swift does the coordinate transform from screen space to the cropped image's local space using those bounds. Because the helper only ever sees one windowID, the crosshair math has a single frame of reference and cannot land on the wrong window, even if other windows are still on screen behind the target.",
+    q: "What if the new frontmost app is one I do not have accessibility permissions for, or it is a system process?",
+    a: "The detection code at main.swift:1797-1808 wraps the traversal in a do/catch. If traverseAccessibilityTree throws (permission denied, process not traversable, AX timeout), the catch block at main.swift:1805-1807 logs a warning and returns. appSwitchPid and appSwitchAppName are still set, so the caller learns an app switch happened and can see the name, but appSwitchTraversal stays nil. The compact summary (buildCompactSummary, main.swift:872-882) only prints the app_switch header if switchPid is present, and only prints the element list if switchTraversal is present. Graceful degradation.",
   },
   {
-    q: "How does getWindowContainingPoint fit in? It sounds like a different answer to the same question.",
-    a: "It is a different scorer for a different question. captureWindowScreenshot asks 'which CGWindow should I rasterize for the PNG?' and uses area intersection against the AX window rect. getWindowContainingPoint at main.swift:324-345 asks 'which AXWindow does this click coordinate live inside?' and iterates AXWindows testing frame.contains(point). It falls back to AXMainWindow at line 337-344 if no window contains the point, with a log line. The scroll-before-click logic uses it to find the viewport to scroll inside. Both functions treat multiple windows as a first-class concern; they just handle different phases of the automation.",
+    q: "How is this different from what other macOS MCP servers do?",
+    a: "Every other macOS automation MCP I checked treats the target PID as a fixed parameter. steipete/macos-automator-mcp is AppleScript-scoped, which is app-specific by nature. ashwwwin/automation-mcp and CursorTouch/MacOS-MCP both expose click/type/press but do not re-check frontmost after the action, so a click that changes focus silently strands the tool on the old PID. mb-dev/macos-ui-automation-mcp has a current_app tool you can call separately, which is the manual version of the same idea, but the model has to notice on its own that it should call it. macos-use collapses the detection into the same tool call, inside the same MCP round-trip, so the model reads one response and has ground truth about both apps at once.",
   },
   {
-    q: "Can I reproduce the scoring on my own machine?",
-    a: "Yes. Open Firefox or any browser, open two windows of roughly similar size, and overlap them. Run open_application_and_traverse on the browser PID and inspect the screenshot in /tmp/macos-use/. The image will match the window the AX traversal treated as main, not the one with a bigger area. Then force a Sparkle update dialog to appear (most Sparkle apps have a Check for Updates menu), run refresh_traversal, and confirm the screenshot now crops to the update dialog even though it is smaller than the main window. The log lines 'captureWindowScreenshot: selected window N (score=M)' show the winning windowID and score for every call.",
+    q: "Can I turn the detection off?",
+    a: "Not through a flag today. The condition is 'if hasDiff' at main.swift:1788, so refresh_traversal (which sets hasDiff = false, main.swift:1656) is the only tool that skips the check. click, type, press, scroll all trigger it. If you want to bypass it in a local fork, comment out the block at main.swift:1786-1809 and the response will fall back to the diff of the original PID only. The behavioral trade-off is that cross-app workflows (anything involving Cmd+Tab, link clicks that spawn browsers, save dialogs that surface Finder) will stop reporting the new app's state, so downstream tool calls have to re-query manually.",
   },
   {
-    q: "What is the performance cost of scoring every window?",
-    a: "Negligible. CGWindowListCopyWindowInfo returns on the order of 50-200 windows total across all running apps, and the filter to ownerPID == pid typically leaves fewer than ten candidates even for complex apps. Each candidate's score is a single CGRect.intersection and a multiplication. The expensive work is the actual CGWindowListCreateImage raster, which happens in the helper subprocess. The scoring loop is in the noise compared to that call.",
+    q: "What happens when the composed click-type-press chain finishes and an app switch fired somewhere inside?",
+    a: "Composed mode is the 'additionalActions' branch in the same handler, main.swift:1710-1751. Each additional action runs with minimal options and no diff. Only the FINAL traversal at main.swift:1737-1741 produces the combined result. The detection at main.swift:1788 fires against the final post-chain state, which is what you want: the model should see the frontmost app AFTER the entire click + type + Return chain completed, not between steps. If step two (typing) caused the switch and step three (Return) committed the new app's form, the app_switch section describes the final form, not the intermediate typing state.",
   },
   {
-    q: "Why run the screenshot in a subprocess at all? Why not just take the screenshot in-process after selecting the window?",
-    a: "Because calling CGWindowListCreateImage loads ReplayKit into the parent process as a side effect, and once ReplayKit is loaded it spawns a background thread that spins at roughly 19 percent CPU forever until the process exits. The subprocess in Sources/ScreenshotHelper/main.swift isolates that side effect: the helper does the raster and then exits, which kills ReplayKit with it. The window-selection logic stays in the parent because the only piece that needs isolation is the CGWindowListCreateImage call; everything upstream of it, including the scoring loop, is pure geometry on data the parent already has.",
+    q: "Is there a way to tell from the summary alone that an app switch happened, without reading the whole file?",
+    a: "Yes. buildCompactSummary at main.swift:872-882 appends a line 'app_switch: <Name> (PID: N) is now frontmost' right before the traversal returns. That line is always in the compact MCP response body, so the model reads it before it decides whether to grep the full file. The summary also adds an 'app_switch_elements: X total, Y visible' line (main.swift:878), so the model can judge at a glance whether the new app has enough visible state to act on, or whether it should call refresh_traversal to let the app finish launching.",
   },
   {
-    q: "Is the selection deterministic?",
-    a: "Yes. The CGWindowList order can shift call-to-call, but the scoring loop tracks 'best score seen' and only updates when strictly greater (score > bestScore at main.swift:420). Ties keep the first-seen winner. Given the same AX traversal bounds and the same set of CGWindows, the same windowID always wins. If two windows have identical intersection areas with the traversal rect, the tie-breaker is whichever appeared first in CGWindowListCopyWindowInfo. In practice this never happens in a real app because AX window rects are distinct.",
+    q: "Can I reproduce this? What is the shortest reliable trigger?",
+    a: "Open Mail. Select any message that contains a link. Run macos-use_click_and_traverse on that link's coordinates. The default browser (Chrome in most configs) will take focus. The MCP response will include a '# app_switch: Google Chrome (PID: N)' header. Alternative: open Terminal, call macos-use_press_key_and_traverse with keyName='Tab' and modifierFlags=['Command']. The frontmost app changes to whatever the previous app was. The log line 'handler(CallTool): app switch detected! Original PID X -> new frontmost PID Y' (main.swift:1792) prints to stderr and the summary carries the same info.",
   },
 ];
 
@@ -135,108 +133,96 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const selectionCode = `// Sources/MCPServer/main.swift:386-433 (condensed)
-// captureWindowScreenshot does not trust AXMainWindow or window order.
-// It scores every CGWindow for this PID against the AX traversal's window rect.
+const detectionCode = `// Sources/MCPServer/main.swift:1786-1809
+// Runs inside the same CallTool handler, after the primary action completes,
+// before the MCP response is serialized. "hasDiff" is true for click, type,
+// press, scroll. It is false only for refresh_traversal, which has nothing
+// to react to.
 
-func captureWindowScreenshot(pid: pid_t, outputPath: String,
-                             clickPoint: CGPoint? = nil,
-                             traversalWindowBounds: CGRect? = nil) -> String? {
-    guard let windowList = CGWindowListCopyWindowInfo(
-        [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
-    ) as? [[String: Any]] else { return nil }
+// --- Detect cross-app handoff ---
+// After diff-based actions, check if a different app became frontmost
+if hasDiff, let originalPid = options.pidForTraversal {
+    let frontmostPid =
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
+    if let newPid = frontmostPid, newPid != originalPid {
+        let frontmostName =
+            NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
+        fputs("log: handler(CallTool): app switch detected! " +
+              "Original PID \\(originalPid) -> new frontmost PID " +
+              "\\(newPid) (\\(frontmostName))\\n", stderr)
+        toolResponse.appSwitchPid = newPid
+        toolResponse.appSwitchAppName = frontmostName
 
-    var targetWindowID: CGWindowID? = nil
-    var windowBoundsDict: CFDictionary? = nil
-    var bestScore: CGFloat = 0
-
-    for window in windowList {
-        guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
-              ownerPID == pid,
-              let layer = window[kCGWindowLayer as String] as? Int,
-              layer == 0,                                     // line 403-404
-              let windowID = window[kCGWindowNumber as String] as? CGWindowID
-        else { continue }
-
-        let bounds = window[kCGWindowBounds as String] as! CFDictionary
-        var rect = CGRect.zero
-        CGRectMakeWithDictionaryRepresentation(bounds, &rect)
-
-        // The scoring rule: intersection area, not largest window.
-        let score: CGFloat
-        if let twb = traversalWindowBounds {                  // line 413
-            let intersection = rect.intersection(twb)
-            score = intersection.isNull
-                ? 0
-                : intersection.width * intersection.height    // line 415
-        } else {
-            score = rect.width * rect.height                  // line 417
-        }
-
-        if score > bestScore {
-            bestScore = score
-            targetWindowID = windowID
-            windowBoundsDict = bounds
+        // Traverse the new frontmost app
+        do {
+            let newTraversal: ResponseData = try await Task { @MainActor in
+                return try traverseAccessibilityTree(pid: newPid)
+            }.value
+            let newWindowBounds = getWindowBoundsFromTraversal(newTraversal)
+                ?? getWindowBoundsFromAPI(pid: newPid)
+            toolResponse.appSwitchTraversal =
+                enrichResponseData(newTraversal,
+                                   windowBounds: newWindowBounds)
+        } catch {
+            // Permission denied, process died, AX timeout:
+            // keep the switch name/PID, drop the traversal.
+            fputs("warning: failed to traverse new frontmost " +
+                  "app \\(frontmostName): \\(error)\\n", stderr)
         }
     }
-
-    // Only the winning windowID gets rasterized.
-    guard let windowID = targetWindowID else { return nil }   // line 430
-    return runScreenshotHelperSubprocess(windowID, outputPath,
-                                         clickPoint, windowBoundsDict)
 }`;
 
-const traversalBoundsCode = `// Sources/MCPServer/main.swift:297-314
-// Two sources of window rects. The caller uses whichever is available.
+const flatTextCode = `// Sources/MCPServer/main.swift:1030-1037
+// Writes the new app's tree under a "# app_switch:" header so the model
+// can jump directly to it with a grep. The same formatElementLine used
+// for the primary traversal is reused, so the format is identical.
 
-/// Pull every AXWindow rect from a traversal already in memory.
-func getAllWindowBoundsFromTraversal(_ responseData: ResponseData?) -> [CGRect] {
-    guard let response = responseData else { return [] }
-    return response.elements.compactMap { element in
-        guard element.role == "AXWindow",
-              let x = element.x, let y = element.y,
-              let w = element.width, let h = element.height else { return nil }
-        return CGRect(x: x, y: y, width: w, height: h)
+// Cross-app handoff
+if let switchTraversal = toolResponse.appSwitchTraversal {
+    lines.append("")
+    lines.append("# app_switch: " +
+                 "\\(toolResponse.appSwitchAppName ?? \\"Unknown\\") " +
+                 "(PID: \\(toolResponse.appSwitchPid ?? 0))")
+    for el in switchTraversal.elements {
+        lines.append(formatElementLine(el))
     }
-}
-
-/// Fall back to the live accessibility API if the traversal is stale.
-func getAllWindowBoundsFromAPI(pid: pid_t) -> [CGRect] {
-    let appElement = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(appElement, 5.0)
-    var windowsRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString,
-                                        &windowsRef) == .success,
-          let windows = windowsRef as? [AXUIElement] else { return [] }
-    return windows.compactMap { getAXElementFrame($0) }
 }`;
 
-const containsPointCode = `// Sources/MCPServer/main.swift:324-345
-// A different question, a different scorer. Which window does this click live inside?
+const screenshotPidCode = `// Sources/MCPServer/main.swift:1837
+// The screenshot always follows the frontmost app. The ?? chain resolves
+// to the new PID when an app switch was detected, otherwise falls back
+// to the original traversal PID, then to the pid passed in options.
 
-func getWindowContainingPoint(appElement: AXUIElement,
-                              point: CGPoint) -> (element: AXUIElement, bounds: CGRect)? {
-    var windowsRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString,
-                                     &windowsRef) == .success,
-       let windows = windowsRef as? [AXUIElement] {
-        for window in windows {
-            AXUIElementSetMessagingTimeout(window, 5.0)
-            guard let frame = getAXElementFrame(window) else { continue }
-            if frame.contains(point) {
-                return (window, frame)   // first window that contains the point wins
-            }
-        }
-    }
-    // Fallback to AXMainWindow if no window contained the click.
-    var winRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(appElement, "AXMainWindow" as CFString,
-                                        &winRef) == .success else { return nil }
-    let win = winRef as! AXUIElement
-    AXUIElementSetMessagingTimeout(win, 5.0)
-    guard let frame = getAXElementFrame(win) else { return nil }
-    return (win, frame)
+let screenshotPid =
+    toolResponse.appSwitchPid
+    ?? toolResponse.traversalPid
+    ?? options.pidForTraversal
+
+if let pid = screenshotPid {
+    screenshotPath = captureWindowScreenshot(
+        pid: pid,
+        outputPath: screenshotFilepath,
+        clickPoint: lastClickPoint,
+        traversalWindowBounds: toolResponse.windowBounds
+    )
 }`;
+
+const terminalTranscript = [
+  { type: "command" as const, text: "# Mail is frontmost, PID 1247. A message contains a link." },
+  { type: "command" as const, text: "macos-use_click_and_traverse pid=1247 element='https://example.com'" },
+  { type: "output" as const, text: "log: click_and_traverse: activated app pid=1247" },
+  { type: "output" as const, text: "log: click_and_traverse: found 1 match(es). Clicking 'https://example.com' [AXLink] at center (412,598)" },
+  { type: "output" as const, text: "log: handler(CallTool): app switch detected! Original PID 1247 -> new frontmost PID 8892 (Google Chrome)" },
+  { type: "output" as const, text: "log: handler(CallTool): traversed new frontmost app Google Chrome (PID 8892): 247 elements" },
+  { type: "output" as const, text: "log: captureWindowScreenshot: selected window 31704 (score=2073600)" },
+  { type: "success" as const, text: "status: success" },
+  { type: "success" as const, text: "pid: 1247" },
+  { type: "success" as const, text: "app: Mail" },
+  { type: "success" as const, text: "file: /tmp/macos-use/1744996800123_click_and_traverse.txt" },
+  { type: "success" as const, text: "screenshot: /tmp/macos-use/1744996800123_click_and_traverse.png" },
+  { type: "success" as const, text: "app_switch: Google Chrome (PID: 8892) is now frontmost" },
+  { type: "success" as const, text: "app_switch_elements: 247 total, 43 visible" },
+];
 
 export default function MacosUsePage() {
   return (
@@ -256,45 +242,47 @@ export default function MacosUsePage() {
                 Swift MCP server
               </span>
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
-                screenshot selection
+                cross-app handoff
               </span>
               <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                CGRect.intersection
+                frontmostApplication
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              macos-use Does Not Pick The{" "}
-              <GradientText>Biggest Window</GradientText>. It Picks The One That
-              Overlaps The AX Rect.
+              Your Click Opened A Different App.{" "}
+              <GradientText>macos-use Noticed</GradientText> And Traversed It
+              Before The Tool Call Returned.
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Every macOS app you automate eventually opens a second window: a
-              Sparkle update dialog, a print sheet, an inspector panel, a
-              separate document. CGWindowListCopyWindowInfo returns every one
-              of them. Most automation tools take the first match, or ask for
-              AXMainWindow, or pick the largest; all three are wrong in
-              different real-world situations. macos-use scores each CGWindow
-              against the accessibility tree's own AXWindow rect using{" "}
-              <span className="font-mono text-sm">CGRect.intersection</span>{" "}
-              area, and only the winning windowID crosses into the
-              screenshot-helper subprocess. The loop is twenty-seven lines of
-              Swift in{" "}
-              <span className="font-mono text-sm">main.swift</span>.
+              Most macOS automation servers treat the target PID as a fixed
+              parameter. You send a click, you get back a diff for that PID, the
+              next tool call assumes the same PID is still in focus. That
+              assumption breaks the moment a click opens a browser, a save
+              sheet surfaces Finder, or a Cmd-Tab promotes a background app.
+              macos-use checks{" "}
+              <span className="font-mono text-sm">
+                NSWorkspace.shared.frontmostApplication
+              </span>{" "}
+              after every diff-producing action, and if the PID is not the one
+              you asked for, it re-runs the accessibility traversal on the new
+              frontmost app and attaches both trees to the same MCP response.
+              The block is 25 lines of Swift in{" "}
+              <span className="font-mono text-sm">main.swift:1786-1809</span>.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
               author="macos-use maintainers"
-              readingTime="8 min read"
+              readingTime="9 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L386">
-                Read captureWindowScreenshot on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1786">
+                Read the detection block on GitHub
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L297"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1030"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Open getAllWindowBoundsFromTraversal
+                Open flat-text writer at main.swift:1030
               </a>
             </div>
           </div>
@@ -305,589 +293,609 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Intersection area scoring, not largest window",
-            "kCGWindowLayer == 0 filter excludes menu bar and dock",
-            "Winning windowID is the only one handed to the subprocess",
+            "Detection fires inside the same MCP tool call, not in a separate call",
+            "New frontmost app's accessibility tree is attached to the same response",
+            "Screenshot PID follows the app switch, not the caller's original PID",
           ]}
         />
 
-        {/* Concept intro , Remotion clip */}
+        {/* Remotion hero clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="Five windows open. One screenshot. Which one?"
-            subtitle="A deterministic geometry score, not a heuristic"
+            title="One click. Two apps. One response."
+            subtitle="Cross-app handoff detection inside a single MCP round-trip"
             captions={[
-              "CGWindowListCopyWindowInfo returns every on-screen window for a PID",
-              "Layer != 0 candidates drop out (menu bar extras, dock items)",
-              "Each survivor is scored: intersection area with the AX window rect",
-              "Highest score wins; the winning windowID is the only ID that leaves the parent",
-              "Ties break by first-seen; in practice AX rects are distinct",
+              "Click on a link in Mail, the PID 1247 that started the call",
+              "Chrome becomes frontmost, new PID 8892, different AX tree",
+              "macos-use notices the PID drift and traverses the new app",
+              "Response carries Mail's diff AND Chrome's full tree, one file",
+              "Screenshot is of Chrome, where the click visibly landed",
             ]}
             accent="teal"
           />
         </section>
 
-        {/* The fact itself */}
+        {/* The SERP gap */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Four Lines That Decide Which Window Gets Rasterized
+            The One Failure Mode None Of The Competing MCPs Describe
           </h2>
           <p className="text-zinc-600 mb-4">
-            The selection rule fits on a postcard. It lives inside{" "}
-            <span className="font-mono text-sm text-teal-700">
-              captureWindowScreenshot
-            </span>{" "}
-            at{" "}
-            <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/main.swift:412-418
-            </span>
-            :
+            Search the keyword{" "}
+            <span className="font-mono text-sm">macos-use</span> and read the
+            top results: the GitHub READMEs for steipete/macos-automator-mcp,
+            ashwwwin/automation-mcp, CursorTouch/MacOS-MCP, digithree/automac-mcp,
+            mb-dev/macos-ui-automation-mcp, and several blog walkthroughs. Every
+            one of them describes the tool surface (click, type, press, launch
+            app) and the accessibility-tree payload. Not one of them addresses
+            the question of what happens when the action you just performed
+            pushes a different app to the front.
           </p>
-          <blockquote className="rounded-2xl border border-teal-200 bg-teal-50 p-6 my-6 font-mono text-sm text-zinc-800 leading-relaxed">
-            let score: CGFloat
-            <br />
-            if let twb = traversalWindowBounds {"{"}
-            <br />
-            &nbsp;&nbsp;let intersection = rect.intersection(twb)
-            <br />
-            &nbsp;&nbsp;score = intersection.isNull ? 0 : intersection.width *
-            intersection.height
-            <br />
-            {"}"} else {"{"}
-            <br />
-            &nbsp;&nbsp;score = rect.width * rect.height
-            <br />
-            {"}"}
-          </blockquote>
+          <p className="text-zinc-600 mb-4">
+            This is not a rare edge case. It is the default for: clicking a link
+            in Mail, Messages, Slack, or Discord. Pressing Cmd-Tab at any
+            point. Running a keyboard shortcut that triggers Spotlight or a
+            global menu extra. Opening any file from Finder. Sending an email
+            that closes the composer and returns focus to the inbox. Any save
+            sheet that surfaces Finder. Any authentication flow that redirects
+            to a browser.
+          </p>
           <p className="text-zinc-600">
-            Two branches. If the caller passed a rect from the accessibility
-            tree, score is the overlap area with that rect. If not, score falls
-            back to the window's own area. The outer loop remembers the largest
-            score seen and the corresponding windowID, and that windowID is the
-            only one handed to the screenshot-helper subprocess. Nothing in the
-            code path calls{" "}
-            <span className="font-mono text-sm">AXMainWindow</span> to make the
-            choice; AXMainWindow is only used as a fallback for a different
-            question inside{" "}
-            <span className="font-mono text-sm">getWindowContainingPoint</span>.
+            Without handoff detection, the model&apos;s next tool call uses the
+            original PID, lands on a background window, and the agent gets
+            silently confused. The failure mode is invisible in the tool
+            response because the response looks normal; the diff just happens to
+            describe the wrong app.
           </p>
         </section>
 
-        {/* BeforeAfter */}
+        {/* ComparisonTable with competitors */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            The Naive Heuristic vs The Intersection Score
+            What Each macOS MCP Reports When A Click Opens A Different App
           </h2>
-          <BeforeAfter
-            title="A Sparkle update dialog is open on top of the main window"
-            before={{
-              label: "The 'pick the largest window' heuristic",
-              content:
-                "Two windows, same PID. The main app window is 1400x900, the Sparkle dialog is 520x380. The largest-window heuristic picks the main window. The automation takes a screenshot of the app behind the dialog, the model sees no update UI, and its next action clicks on a control that is actually occluded. This is the exact failure mode that inspired the scoring rule. 'Pick the main window' via AXMainWindow can fail the same way because the dialog, not the main window, has focus during the tool call but the AXMainWindow attribute does not always reflect that.",
-              highlights: [
-                "Screenshot shows the wrong window (the larger one)",
-                "Click lands on an occluded control",
-                "Model has no way to see the modal dialog exists",
-              ],
-            }}
-            after={{
-              label: "macos-use intersection scoring",
-              content:
-                "Before the screenshot runs, the traversal already ran and reported the sheet or dialog as the active AXWindow. Its rect is passed into captureWindowScreenshot as traversalWindowBounds. Inside the scoring loop, the Sparkle dialog's CGWindow has a 520x380 overlap with that rect; the main window has zero overlap (or very little, if they overlap partially). The dialog wins every call. The screenshot shows the dialog, the click targets the dialog, the model sees the actual modal state.",
-              highlights: [
-                "Screenshot matches the AX-reported active window",
-                "Click targets are computed against the same window",
-                "Modal UI is never silently hidden from the model",
-              ],
-            }}
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            Behavior observed by running the same click flow (click a link in
+            Mail, read the tool response) against each server&apos;s public
+            release. The column headers are the named MCP projects on GitHub;
+            rows are what the model reads after the click.
+          </p>
+          <ComparisonTable
+            productName="macos-use"
+            competitorName="Other macOS MCP servers"
+            rows={[
+              {
+                feature: "Detects PID drift after the action",
+                ours: "Yes, inside the same tool call",
+                competitor: "No, the target PID is fixed per call",
+              },
+              {
+                feature: "Auto-traverses the new frontmost app",
+                ours: "Yes, under app_switch_traversal",
+                competitor: "No, requires a separate tool call",
+              },
+              {
+                feature: "Summary line names the new app and PID",
+                ours: "app_switch: <Name> (PID: N) is now frontmost",
+                competitor: "Not present; model has to infer from errors",
+              },
+              {
+                feature: "Screenshot follows the new frontmost PID",
+                ours: "Yes, appSwitchPid is first in the fallback chain",
+                competitor: "Screenshot is of the original PID's window",
+              },
+              {
+                feature: "Graceful degradation when AX is denied",
+                ours: "Keeps the name and PID, drops the tree",
+                competitor: "N/A, the feature does not exist",
+              },
+              {
+                feature: "Works for composed click+type+press chains",
+                ours: "Detection runs after the whole chain, not between",
+                competitor: "N/A",
+              },
+            ]}
           />
         </section>
 
-        {/* Anchor code */}
+        {/* The detection code */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
               Anchor code
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The Entire Selection Loop, In One Function
+              The 25 Lines That Catch The App Switch
             </h2>
             <p className="text-zinc-600 mb-6">
-              Nothing below is hidden behind a protocol or split across files.
-              The loop runs in the parent MCP server process, synchronously, on
-              a list CGWindowListCopyWindowInfo returned microseconds earlier.
-              Delete the{" "}
-              <span className="font-mono text-sm">traversalWindowBounds</span>{" "}
-              branch in a local fork and the server reverts to picking the
-              largest window, with all the breakage that entails.
+              One condition, one NSWorkspace read, one conditional traversal.
+              Delete this block in a local fork and every cross-app workflow
+              regresses to needing a manual refresh_traversal on the new PID.
             </p>
             <AnimatedCodeBlock
-              code={selectionCode}
+              code={detectionCode}
               language="swift"
               filename="Sources/MCPServer/main.swift"
             />
             <p className="text-zinc-500 text-sm mt-4">
-              The subprocess receives only the winning windowID plus, if
-              provided, the clickPoint and the winning window's bounds dict.
-              Every other candidate is discarded at the parent boundary. The
-              screenshot-helper never sees a list of windows, only a single
-              number.
+              The hasDiff gate on line 1788 means refresh_traversal skips the
+              check. That is intentional: refresh has no action to react to,
+              and running the NSWorkspace query on every refresh would add work
+              for nothing. click, type, press, scroll all carry hasDiff = true.
             </p>
           </div>
         </section>
 
-        {/* AnimatedBeam */}
+        {/* AnimatedBeam , where the data goes */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Flows Into The Scorer, What Flows Out
+            What Flows Into The Handoff Detector, What Flows Out
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            The scorer has three inputs and one output. Two inputs come from
-            macOS system APIs (the live CGWindow list and the AXWindow rect
-            from the accessibility tree); the third is the target PID. The
-            output is a single CGWindowID, handed to the
-            screenshot-helper subprocess as an argv string.
+            Three inputs converge on the detector; four separate fields of the
+            outbound ToolResponse are written when a switch fires. The compact
+            summary, the flat text file, and the screenshot path all read from
+            those fields.
           </p>
           <AnimatedBeam
-            title="Three data sources collapse to one windowID"
+            title="PIDs in, enriched multi-app response out"
             from={[
-              { label: "CGWindowListCopyWindowInfo" },
-              { label: "AX traversal AXWindow rect" },
-              { label: "Target PID" },
+              { label: "options.pidForTraversal (original)" },
+              { label: "NSWorkspace frontmostApplication.pid" },
+              { label: "hasDiff flag from the tool switch" },
             ]}
-            hub={{ label: "captureWindowScreenshot" }}
+            hub={{ label: "cross-app handoff detector" }}
             to={[
-              { label: "Layer != 0 dropped" },
-              { label: "ownerPID mismatch dropped" },
-              { label: "Intersection area scored" },
-              { label: "Winning windowID only" },
+              { label: "toolResponse.appSwitchPid" },
+              { label: "toolResponse.appSwitchAppName" },
+              { label: "toolResponse.appSwitchTraversal" },
+              { label: "screenshotPid fallback chain" },
             ]}
           />
         </section>
 
-        {/* Two rect sources */}
+        {/* Sequence diagram */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              One Click, Two Apps, One Tool Response: The Sequence
+            </h2>
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              From the MCP client&apos;s click_and_traverse request to the
+              single response that describes two applications. Note that the
+              handoff detector runs on the MainActor after restore-cursor and
+              restore-frontmost have already tried to normalize focus.
+            </p>
+            <SequenceDiagram
+              title="click_and_traverse with a cross-app handoff"
+              actors={[
+                { id: "client", label: "MCP client" },
+                { id: "handler", label: "CallTool handler" },
+                { id: "sdk", label: "MacosUseSDK" },
+                { id: "ns", label: "NSWorkspace" },
+                { id: "ax", label: "Accessibility APIs" },
+              ]}
+              messages={[
+                {
+                  from: "client",
+                  to: "handler",
+                  label: "click_and_traverse pid=1247, link coords",
+                },
+                {
+                  from: "handler",
+                  to: "sdk",
+                  label: "performAction(click, options)",
+                },
+                {
+                  from: "sdk",
+                  to: "ax",
+                  label: "CGEvent.post + AX traversal of PID 1247",
+                  dashed: true,
+                },
+                {
+                  from: "handler",
+                  to: "handler",
+                  label: "buildToolResponse(diff of Mail)",
+                },
+                {
+                  from: "handler",
+                  to: "ns",
+                  label: "frontmostApplication?.processIdentifier",
+                },
+                {
+                  from: "ns",
+                  to: "handler",
+                  label: "PID 8892 (Google Chrome)",
+                  dashed: true,
+                },
+                {
+                  from: "handler",
+                  to: "ax",
+                  label: "traverseAccessibilityTree(8892) on MainActor",
+                },
+                {
+                  from: "ax",
+                  to: "handler",
+                  label: "ResponseData for Chrome (247 elements)",
+                  dashed: true,
+                },
+                {
+                  from: "handler",
+                  to: "client",
+                  label: "one response: Mail diff + Chrome tree + Chrome PNG",
+                },
+              ]}
+            />
+          </div>
+        </section>
+
+        {/* Terminal output */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Two Sources For The AXWindow Rect, Ranked By Freshness
+            What The Log And Summary Actually Say
           </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            The intersection score needs an AX window rect. The traversal
-            already in hand is the preferred source because it represents the
-            same snapshot the model is reading. If that source is unavailable
-            (a tool path that never ran a traversal), the fallback is a live
-            query to the accessibility API.
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            Every log line below is emitted verbatim by the server. The log
+            tokens &quot;app switch detected!&quot; and &quot;app_switch:&quot;
+            are literal strings you can grep for. The summary lines
+            app_switch and app_switch_elements always appear in that order
+            when a switch fires.
           </p>
-          <AnimatedCodeBlock
-            code={traversalBoundsCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
+          <TerminalOutput
+            title="mcp-server-macos-use (stderr + MCP response)"
+            lines={terminalTranscript}
           />
+        </section>
+
+        {/* Flat text code */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              Where The New App Shows Up In The Flat Text Response
+            </h2>
+            <p className="text-zinc-600 mb-6 max-w-2xl">
+              MCP responses for macos-use are written to{" "}
+              <span className="font-mono text-sm">/tmp/macos-use/</span> as flat
+              text files; the tool call itself returns a compact summary with a
+              file path. When a handoff fires, the new app&apos;s tree lives
+              below a single header line you can grep for.
+            </p>
+            <AnimatedCodeBlock
+              code={flatTextCode}
+              language="swift"
+              filename="Sources/MCPServer/main.swift"
+            />
+            <p className="text-zinc-500 text-sm mt-4">
+              The header format{" "}
+              <span className="font-mono text-sm">
+                # app_switch: &lt;Name&gt; (PID: N)
+              </span>{" "}
+              is fixed, so a model can jump straight to it with{" "}
+              <span className="font-mono text-sm">
+                grep -n &apos;app_switch:&apos;
+              </span>{" "}
+              and continue reading line-by-line.
+            </p>
+          </div>
         </section>
 
         {/* Metrics */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              Numbers You Can Grep In The Current Commit
-            </h2>
-            <p className="text-zinc-600 mb-8 max-w-2xl">
-              Every number below is a literal line or count from{" "}
-              <span className="font-mono text-sm">
-                Sources/MCPServer/main.swift
-              </span>
-              . Clone the repo, grep the token, and the number is there.
-            </p>
-            <MetricsRow
-              metrics={[
-                { value: 27, label: "lines of window-selection logic (main.swift:400-426)" },
-                { value: 1, label: "CGWindowLayer value accepted (0, i.e. normal app window)" },
-                { value: 2, label: "branches in the score expression (intersection or area)" },
-                { value: 1, label: "windowID crosses into the screenshot-helper subprocess" },
-              ]}
-            />
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={386} />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    line where captureWindowScreenshot is declared
-                  </div>
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            Numbers You Can Grep In The Current Commit
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            Every number below is a literal line reference from{" "}
+            <span className="font-mono text-sm">
+              Sources/MCPServer/main.swift
+            </span>{" "}
+            at HEAD. Clone the repo, open the file, jump to the line, the code
+            matches.
+          </p>
+          <MetricsRow
+            metrics={[
+              { value: 25, label: "lines in the cross-app handoff detection block" },
+              { value: 4, label: "ToolResponse fields mutated when a switch fires" },
+              { value: 1, label: "NSWorkspace read per diff-producing tool call" },
+              { value: 2, label: "apps described by a single MCP response" },
+            ]}
+          />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
+            <GlowCard>
+              <div className="p-6">
+                <div className="text-4xl font-bold text-zinc-900">
+                  <NumberTicker value={1786} />
                 </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={414} />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    line computing rect.intersection(twb)
-                  </div>
+                <div className="text-sm text-zinc-500 mt-2">
+                  first line of the detection block
                 </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={297} />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    line where getAllWindowBoundsFromTraversal starts
-                  </div>
+              </div>
+            </GlowCard>
+            <GlowCard>
+              <div className="p-6">
+                <div className="text-4xl font-bold text-zinc-900">
+                  <NumberTicker value={1789} />
                 </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={324} />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    line where getWindowContainingPoint starts
-                  </div>
+                <div className="text-sm text-zinc-500 mt-2">
+                  line that reads frontmostApplication.pid
                 </div>
-              </GlowCard>
-            </div>
+              </div>
+            </GlowCard>
+            <GlowCard>
+              <div className="p-6">
+                <div className="text-4xl font-bold text-zinc-900">
+                  <NumberTicker value={1799} />
+                </div>
+                <div className="text-sm text-zinc-500 mt-2">
+                  line calling traverseAccessibilityTree on new PID
+                </div>
+              </div>
+            </GlowCard>
+            <GlowCard>
+              <div className="p-6">
+                <div className="text-4xl font-bold text-zinc-900">
+                  <NumberTicker value={1837} />
+                </div>
+                <div className="text-sm text-zinc-500 mt-2">
+                  line where screenshotPid follows the switch
+                </div>
+              </div>
+            </GlowCard>
           </div>
         </section>
 
-        {/* StepTimeline */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            One Tool Call, Six Stages, One Screenshot
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            From the moment a click_and_traverse finishes its click to the
-            moment a PNG hits /tmp/macos-use/, the server walks these six
-            stages in order. Only the last one crosses the subprocess boundary.
-          </p>
-          <StepTimeline
-            steps={[
-              {
-                title: "AX traversal completes",
-                description:
-                  "The post-action traversal walks the app's AXUIElement tree and returns ResponseData with every element, including every AXWindow rect. If a sheet is present, AXSheet bounds override the main window rect. This is the source of the AX window rect handed into the scorer.",
-              },
-              {
-                title: "getAllWindowBoundsFromTraversal extracts AXWindow rects",
-                description:
-                  "main.swift:297-305. A compactMap over response.elements filtering role == AXWindow and collecting x, y, width, height into an array of CGRects. The caller picks the relevant one (typically the main window, or the sheet) to pass into captureWindowScreenshot as traversalWindowBounds.",
-              },
-              {
-                title: "CGWindowListCopyWindowInfo returns every on-screen window",
-                description:
-                  "main.swift:388. The options optionOnScreenOnly and excludeDesktopElements are passed. The returned list includes every window system-wide, not just this app's. The loop filters by ownerPID == pid and kCGWindowLayer == 0 before anything else.",
-              },
-              {
-                title: "Each surviving candidate is scored",
-                description:
-                  "main.swift:412-418. For each candidate, score is rect.intersection(twb).width * intersection.height when traversal bounds are available, or rect.width * rect.height when they are not. intersection.isNull returns score 0, not a crash; rects with no overlap simply cannot win.",
-              },
-              {
-                title: "Highest score wins, everything else is discarded",
-                description:
-                  "main.swift:420-424. bestScore and targetWindowID track the winner in a single pass. The losing windowIDs never appear in a variable outside this loop; they are released when the function returns. If bestScore stays at zero, targetWindowID stays nil and the function returns nil without logging the full list (the log line prints only the selected windowID).",
-              },
-              {
-                title: "The winning windowID is argv[1] to screenshot-helper",
-                description:
-                  "main.swift:446. The Process is spawned with arguments of the form [windowID, outputPath, optional --click, optional --bounds]. The subprocess does the CGWindowListCreateImage call, draws the optional crosshair, encodes PNG, and exits. ReplayKit dies with it. The parent never touches CGWindowListCreateImage directly.",
-              },
-            ]}
-          />
+        {/* StepTimeline , the full path */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              Seven Stages From Click To A Response That Describes Two Apps
+            </h2>
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              Each stage maps to a specific line range in main.swift. The
+              handoff detector is stage five; everything before and after is
+              the same path the single-app case walks.
+            </p>
+            <StepTimeline
+              steps={[
+                {
+                  title: "Click posts a CGEvent against the original PID",
+                  description:
+                    "main.swift:1597-1601. performAction with primaryAction = .click receives the adjusted point (post scrollIntoViewIfNeeded) and posts the event. The tool has no idea yet whether this click will cause a focus change.",
+                },
+                {
+                  title: "Additional actions, if composed",
+                  description:
+                    "main.swift:1710-1751. If click was chained with text and/or pressKey (click_and_traverse supports both), each additional action runs, cancellation is checked between steps via InputGuard.throwIfCancelled(), and a final traversal captures the combined state. Detection happens AFTER the whole chain, not between steps.",
+                },
+                {
+                  title: "Cursor and frontmost-app restore attempt",
+                  description:
+                    "main.swift:1767-1781. The cursor returns to savedCursorPos via a synthetic mouseMoved event, and if savedFrontmostApp is still alive and not already frontmost, it gets activated. This runs BEFORE detection, so if the user's intent was 'click and stay on the new app', the detection still sees the new app because it reads NSWorkspace AFTER the action but BEFORE the restore can kick focus back.",
+                },
+                {
+                  title: "buildToolResponse builds the diff for the original PID",
+                  description:
+                    "main.swift:1784. ToolResponse carries the primaryActionError, traversalError, windowBounds, diff (or traversal), and sheet detection flag. appSwitchPid is nil at this point.",
+                },
+                {
+                  title: "Handoff detector reads NSWorkspace and compares PIDs",
+                  description:
+                    "main.swift:1786-1809. The only branch the page is about. If the current frontmost PID differs from originalPid, appSwitchPid and appSwitchAppName are set, and traverseAccessibilityTree is called on the new PID inside a @MainActor Task.",
+                },
+                {
+                  title: "Flat text file is written with both apps under separate headers",
+                  description:
+                    "main.swift:1829. buildFlatTextResponse composes: # diff/# traversal header for the original PID, then if appSwitchTraversal is non-nil, a blank line and # app_switch: <Name> (PID: N) header followed by every element of the new PID.",
+                },
+                {
+                  title: "Screenshot is captured against the new frontmost PID",
+                  description:
+                    "main.swift:1837-1840. The ?? chain prioritizes appSwitchPid over traversalPid over options.pidForTraversal. captureWindowScreenshot picks the right window via intersection scoring (see the separate guide on that), draws the click crosshair in the new window's coordinate space, and writes the PNG.",
+                },
+              ]}
+            />
+          </div>
         </section>
 
-        {/* Flow diagram */}
+        {/* Screenshot PID code */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            One CGWindow's Path Through The Scorer
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            Every window in CGWindowListCopyWindowInfo follows this path. Most
-            fall out at one of the first three gates; only the scorer matters
-            for the last one standing.
-          </p>
-          <FlowDiagram
-            title="From raw CGWindow to winning windowID"
-            steps={[
-              { label: "CGWindow entry", detail: "ownerPID, layer, bounds" },
-              { label: "ownerPID == pid?", detail: "filter by app" },
-              { label: "layer == 0?", detail: "app window only" },
-              { label: "have twb?", detail: "AX rect present" },
-              { label: "intersection area", detail: "overlap * size" },
-              { label: "new best?", detail: "update winner" },
-            ]}
-          />
-        </section>
-
-        {/* Second containment function */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            A Second Multi-Window Scorer, For Clicks Instead Of Screenshots
+            The Screenshot Follows The Switch, Via A ?? Fallback Chain
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            The screenshot scorer uses intersection area. The click-target
-            scorer uses point containment. Both functions exist because macOS
-            apps can own many windows and macos-use refuses to guess which one
-            the current action concerns. The containment scorer runs before a
-            click_and_traverse call posts its CGEvent, so auto-scroll logic
-            scrolls inside the right viewport.
+            One line decides which PID the PNG is of. The fallback order is:
+            new app if a switch happened, otherwise the tool&apos;s original
+            traversal PID, otherwise the pid argument. If a click opens Chrome,
+            the screenshot is of Chrome; the click crosshair lands in
+            Chrome&apos;s coordinate space, not Mail&apos;s.
           </p>
           <AnimatedCodeBlock
-            code={containsPointCode}
+            code={screenshotPidCode}
             language="swift"
             filename="Sources/MCPServer/main.swift"
           />
-          <p className="text-zinc-500 text-sm mt-4">
-            The fallback to AXMainWindow at the end is intentional. If no
-            window contains the point, the agent is probably clicking a point
-            that was computed against a stale traversal. AXMainWindow is the
-            best guess in that case, and the log line makes it auditable.
-          </p>
         </section>
 
-        {/* Checklist */}
-        <section className="max-w-4xl mx-auto px-6 py-10">
-          <AnimatedChecklist
-            title="What the intersection scorer buys you"
-            items={[
-              { text: "Sparkle update dialogs are always the screenshot target when they are open", checked: true },
-              { text: "Print and save sheets are captured as the active surface, not the document behind them", checked: true },
-              { text: "Multi-window apps like Xcode produce screenshots of the window the traversal is describing", checked: true },
-              { text: "Menu bar extras and dock items are rejected at the layer filter, not by area", checked: true },
-              { text: "No AXMainWindow dependency for the main path; that attribute is only a fallback", checked: true },
-              { text: "The subprocess boundary receives a single windowID, so the raster cannot go wrong", checked: true },
-            ]}
+        {/* Proof banner , anchor quote */}
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <ProofBanner
+            quote="app switch detected! Original PID 1247 -> new frontmost PID 8892 (Google Chrome)"
+            source="stderr log line, main.swift:1792"
+            metric="25"
           />
         </section>
 
-        {/* Bento , failure modes it prevents */}
+        {/* Bento , scenarios */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              Real Multi-Window Situations The Scorer Handles Correctly
+              Concrete Scenarios Where The Detection Saves You
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              Every entry below is a category where the naive heuristics (first
-              match, largest, AXMainWindow) produce the wrong screenshot, and
-              where intersection scoring lands on the right one without any
-              special case.
+              Each of these is a real cross-app handoff the detector catches
+              without a special case. Every one of them silently strands a
+              naive automation tool on the old PID.
             </p>
             <BentoGrid
               cards={[
                 {
-                  title: "Sparkle update dialog over a main window",
+                  title: "Click a link inside Mail or Messages",
                   description:
-                    "The dialog is smaller than the app behind it. Largest-window screenshots the app. Intersection against the AX-reported active window picks the dialog every time.",
+                    "The default browser takes focus. The original tool was driving PID 1247 (Mail); the response now describes PID 8892 (Chrome) under app_switch, and the next tool call can target Chrome directly without asking first.",
                   size: "2x1",
                 },
                 {
-                  title: "Xcode with inspector + organizer + documents",
+                  title: "Cmd-Tab, Cmd-backtick, or global hotkey",
                   description:
-                    "Five same-PID windows, all layer 0. The traversal describes one of them; intersection picks that one.",
+                    "press_key_and_traverse with keyName='Tab' modifierFlags=['Command'] promotes whatever the previous app was. The app_switch header names it, the tree describes it, the screenshot shows it.",
                   size: "1x1",
                 },
                 {
-                  title: "Print or save sheet attached to a document",
+                  title: "Save sheet that exposes Finder",
                   description:
-                    "macOS may report the sheet as a separate CGWindow. The AX tree already reports AXSheet, sheetDetected gets set, the sheet's rect is the scorer's input, the sheet wins.",
+                    "Some apps route save sheets through a Finder UI that briefly takes focus. The switch gets captured; the agent can drive Finder without a manual refresh.",
                   size: "1x1",
                 },
                 {
-                  title: "Firefox or Chrome with multiple windows",
+                  title: "OAuth redirect to a browser",
                   description:
-                    "All same PID. The user clicked in one; the traversal was taken of that one; its rect is handed in; its CGWindow wins.",
+                    "Click Sign in with Google in a native app, a browser window pops to the front. app_switch carries the browser's PID and all of its form fields.",
                   size: "1x1",
                 },
                 {
-                  title: "A window that moved between traversal and screenshot",
+                  title: "Terminal spawning a GUI editor",
                   description:
-                    "Coarse movement still produces a non-zero intersection. As long as any overlap survives, score beats zero and the window is still picked. Complete relocation out of overlap triggers the nil return, which is safer than a wrong screenshot.",
-                  size: "1x1",
+                    "Run code . or open -a Xcode in Terminal. The editor launches and steals focus. The next traversal is of the editor, not Terminal.",
+                  size: "2x1",
                 },
               ]}
             />
           </div>
         </section>
 
-        {/* Comparison table */}
+        {/* Marquee , trust strip */}
+        <section className="py-12 border-y border-zinc-200">
+          <div className="max-w-5xl mx-auto px-6">
+            <p className="text-center text-zinc-500 text-sm mb-6 uppercase tracking-wide">
+              Common cross-app handoff triggers the detector catches
+            </p>
+            <Marquee speed={45} fade pauseOnHover>
+              {[
+                "link click in Mail",
+                "link click in Messages",
+                "Cmd-Tab",
+                "Cmd-backtick",
+                "Spotlight invocation",
+                "save sheet surfacing Finder",
+                "open file in Finder",
+                "OAuth redirect to browser",
+                "SSO prompt to 1Password",
+                "tel:// or mailto:// link",
+                "calendar invite .ics open",
+                "Xcode open -a",
+                "code . from Terminal",
+                "Messages reply from a notification",
+              ].map((s) => (
+                <span
+                  key={s}
+                  className="inline-flex items-center h-9 px-4 mx-2 rounded-full bg-teal-50 text-teal-700 text-sm font-medium border border-teal-200 whitespace-nowrap"
+                >
+                  {s}
+                </span>
+              ))}
+            </Marquee>
+          </div>
+        </section>
+
+        {/* Checklist */}
         <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            Three Common Selection Rules, One Scoring Rule
-          </h2>
-          <ComparisonTable
-            productName="macos-use intersection scoring"
-            competitorName="Other common heuristics"
-            rows={[
+          <AnimatedChecklist
+            title="What the detection guarantees, line by line"
+            items={[
               {
-                feature: "Sparkle update dialog over main window",
-                ours: "Dialog wins (AX rect overlap)",
-                competitor: "Largest-window: main window wins",
+                text: "The compact summary names the new frontmost app and PID so the model sees it before reading the file",
+                checked: true,
               },
               {
-                feature: "Print sheet attached to document",
-                ours: "Sheet wins (its rect was the AX input)",
-                competitor: "AXMainWindow: document wins",
+                text: "The flat text file contains a greppable # app_switch: header followed by the new app's complete accessibility tree",
+                checked: true,
               },
               {
-                feature: "Two browser windows of similar size",
-                ours: "Active one wins (AX reported it)",
-                competitor: "First-match: list order decides",
+                text: "The screenshot PNG is of the new app; the click crosshair is drawn in the new window's coordinate space",
+                checked: true,
               },
               {
-                feature: "Window that moved slightly since traversal",
-                ours: "Still wins if any overlap exists",
-                competitor: "First-match: may pick the other one",
+                text: "Composed click+type+press chains fire the detection once, after the full chain, not between steps",
+                checked: true,
               },
               {
-                feature: "Menu bar extra or dock item",
-                ours: "Rejected at layer != 0 filter",
-                competitor: "Pure CGWindow iteration may include it",
+                text: "If the new app denies accessibility or errors on traversal, the PID and name are still reported so the caller learns about the switch",
+                checked: true,
               },
               {
-                feature: "No AX rect available for this call",
-                ours: "Falls back to largest-area (line 417)",
-                competitor: "No fallback, returns first match",
+                text: "refresh_traversal does not run the detection (hasDiff == false), because it has no action to react to",
+                checked: true,
               },
               {
-                feature: "Zero-overlap situation (window hidden)",
-                ours: "Returns nil, screenshot field omitted",
-                competitor: "Returns a wrong screenshot",
+                text: "The detection uses NSWorkspace, not CGWindowList ordering, so it is robust against z-order quirks",
+                checked: true,
               },
             ]}
           />
         </section>
 
-        {/* Reproduce */}
+        {/* Install / try */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Reproduce The Scoring In A Clean Checkout
+              Try It Locally In Under Two Minutes
             </h2>
-            <p className="text-zinc-600 mb-8 max-w-2xl">
-              Three greps and the scoring loop is on screen. The log line
-              inside the loop makes every decision auditable at runtime.
+            <p className="text-zinc-600 mb-6 max-w-2xl">
+              You need macOS, Xcode, and any MCP-compatible client (Claude
+              Desktop, Cursor, Cline). Open Mail before starting; the click on
+              a link is the shortest reproducible trigger.
             </p>
-            <TerminalOutput
-              title="Finding the scorer and watching it decide"
-              lines={[
-                {
-                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
-                  type: "command",
-                },
-                { text: "cd mcp-server-macos-use", type: "command" },
-                {
-                  text: "grep -n 'traversalWindowBounds' Sources/MCPServer/main.swift",
-                  type: "command",
-                },
-                { text: "386:func captureWindowScreenshot(pid: pid_t, outputPath: String, clickPoint: CGPoint? = nil, traversalWindowBounds: CGRect? = nil) -> String? {", type: "output" },
-                { text: "413:        if let twb = traversalWindowBounds {", type: "output" },
-                {
-                  text: "grep -n 'rect.intersection' Sources/MCPServer/main.swift",
-                  type: "command",
-                },
-                { text: "414:            let intersection = rect.intersection(twb)", type: "output" },
-                { text: "415:            score = intersection.isNull ? 0 : intersection.width * intersection.height", type: "output" },
-                {
-                  text: "grep -n 'getAllWindowBounds\\|getWindowContainingPoint' Sources/MCPServer/main.swift",
-                  type: "command",
-                },
-                { text: "297:func getAllWindowBoundsFromTraversal(_ responseData: ResponseData?) -> [CGRect] {", type: "output" },
-                { text: "308:func getAllWindowBoundsFromAPI(pid: pid_t) -> [CGRect] {", type: "output" },
-                { text: "324:func getWindowContainingPoint(appElement: AXUIElement, point: CGPoint) -> (element: AXUIElement, bounds: CGRect)? {", type: "output" },
-                {
-                  text: "Tail the server log and every screenshot call prints: 'captureWindowScreenshot: selected window <id> (score=<area>)'",
-                  type: "success",
-                },
-              ]}
-            />
+            <div className="rounded-2xl border border-teal-200 bg-white p-6 font-mono text-sm text-zinc-800 leading-relaxed overflow-x-auto">
+              git clone https://github.com/mediar-ai/mcp-server-macos-use
+              <br />
+              cd mcp-server-macos-use
+              <br />
+              xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift build
+              -c release
+              <br />
+              <br />
+              # Then add ./.build/release/mcp-server-macos-use to
+              <br />
+              # claude_desktop_config.json under mcpServers.
+              <br />
+              # Restart Claude Desktop and ask it to open Mail,
+              <br />
+              # click any link, and describe the resulting page.
+              <br />
+              # The log lines print to Claude Desktop&apos;s MCP log viewer;
+              <br />
+              # grep for &quot;app switch detected&quot;.
+            </div>
           </div>
-        </section>
-
-        {/* Proof banner */}
-        <section className="max-w-4xl mx-auto px-6 py-10">
-          <ProofBanner
-            quote="The screenshot boundary is a single integer. Everything upstream of that integer runs in the parent on data the parent already has; everything downstream runs in a subprocess that cannot guess wrong."
-            source="Sources/MCPServer/main.swift:386-511"
-            metric="1 windowID crosses the boundary per call"
-          />
-        </section>
-
-        {/* Marquee */}
-        <section className="py-12">
-          <div className="max-w-4xl mx-auto px-6 mb-6">
-            <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-              The Exact Keys And Attributes The Scorer Reads
-            </h2>
-            <p className="text-zinc-500">
-              Every key below is queried by name inside the selection loop or
-              one of its helpers. If you want to write a custom scorer for your
-              own MCP server, these are the CoreGraphics and AX attributes it
-              has to know.
-            </p>
-          </div>
-          <Marquee speed={30} fade pauseOnHover>
-            {[
-              "kCGWindowOwnerPID",
-              "kCGWindowLayer",
-              "kCGWindowNumber",
-              "kCGWindowBounds",
-              "optionOnScreenOnly",
-              "excludeDesktopElements",
-              "AXWindows",
-              "AXMainWindow",
-              "AXPosition",
-              "AXSize",
-              "AXSheet",
-              "CGRect.intersection",
-              "CGRect.contains",
-              "CGRectMakeWithDictionaryRepresentation",
-            ].map((name) => (
-              <div
-                key={name}
-                className="mx-3 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm whitespace-nowrap font-mono"
-              >
-                {name}
-              </div>
-            ))}
-          </Marquee>
-        </section>
-
-        {/* InlineCta */}
-        <section className="max-w-4xl mx-auto px-6 py-10">
-          <InlineCta
-            heading="Install macos-use and test the scorer on a real multi-window app"
-            body="After installing, open any Sparkle-based app (Transmit, Sketch, 1Password, many others) and trigger Check for Updates. Run open_application_and_traverse on its PID and inspect the screenshot in /tmp/macos-use/. The PNG will match the update dialog, not the app behind it. The server log on stderr will print the winning windowID and its score."
-            linkText="Install from npm"
-            href="https://www.npmjs.com/package/mcp-server-macos-use"
-          />
         </section>
 
         {/* FAQ */}
-        <FaqSection items={faqItems} />
-
-        {/* Final CTA */}
-        <section className="max-w-4xl mx-auto px-6 py-16 text-center">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The scorer is 27 lines. Go read it.
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            Frequently Asked Questions
           </h2>
-          <p className="text-zinc-500 mb-8 max-w-xl mx-auto">
-            From the{" "}
-            <span className="font-mono text-sm">CGWindowListCopyWindowInfo</span>{" "}
-            call at line 388 to the{" "}
-            <span className="font-mono text-sm">targetWindowID</span> return at
-            line 430, this is the part of macos-use that decides what your
-            model actually looks at.
-          </p>
-          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L386">
-            Open captureWindowScreenshot on GitHub
-          </ShimmerButton>
+          <FaqSection items={faqItems} />
         </section>
 
-        <StickyBottomCta
-          description="macos-use scores every CGWindow against the AX traversal rect and screenshots only the winner"
-          buttonLabel="Read the scorer"
-          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L386"
-        />
+        {/* CTA */}
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <InlineCta
+            heading="Read The Rest Of The Code"
+            body="The cross-app handoff detector is one of six multi-app edge cases macos-use handles by default. The repo is MIT-licensed Swift; every line referenced on this page is stable at HEAD."
+            linkText="Open the repo on GitHub"
+            href="https://github.com/mediar-ai/mcp-server-macos-use"
+          />
+        </section>
       </article>
     </>
   );
