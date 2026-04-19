@@ -1,7 +1,10 @@
+@layer seo-components, theme, base, components, utilities;
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+@source "../../node_modules/@seo/components/src";
 @source "../../node_modules/@m13v/seo-components/src";
 
 html, body {
