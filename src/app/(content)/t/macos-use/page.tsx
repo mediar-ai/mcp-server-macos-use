@@ -16,6 +16,9 @@ import {
   StepTimeline,
   HorizontalStepper,
   FlowDiagram,
+  SequenceDiagram,
+  AnimatedChecklist,
+  MetricsRow,
   ComparisonTable,
   GlowCard,
   BentoGrid,
@@ -33,9 +36,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: The Auto Scroll-To-Reveal That Fires When You Click An Off-Screen Element";
+  "macos-use: Why The Swift MCP Server Ships Two Binaries To Screenshot One Window";
 const DESCRIPTION =
-  "macos-use is a Swift MCP server for macOS automation. The part nobody else writes about: when the target of a click tool call is below the fold, the server reads its text from the accessibility tree, scrolls 1-3 wheel-lines at a time based on distance, re-finds the element by text in the updated tree, and clicks the fresh coordinate. Walk through main.swift:1126-1285 and the call site at 1588.";
+  "macos-use is a Swift MCP server for driving macOS apps via accessibility APIs. The non-obvious part: it ships two executables, not one. CGWindowListCreateImage silently loads ReplayKit, which then spins at ~19% CPU inside whatever process first touched it, forever. The fix is to screenshot from a subprocess and let ReplayKit die with it. Walk through Package.swift, Sources/ScreenshotHelper/main.swift, and captureWindowScreenshot at main.swift:378-511.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -49,9 +52,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: how click_and_traverse scrolls off-screen targets into view",
+    title: "macos-use: the two-binary trick that keeps the MCP server's CPU clean",
     description:
-      "Text-anchored scroll loop. 1-3 wheel-lines per step based on pixel distance. Re-search the AX tree after every tick. Up to 30 steps.",
+      "CGWindowListCreateImage leaks ReplayKit into the caller's process at ~19% CPU. macos-use screenshots from a second executable so the leak exits with the subprocess.",
   },
 };
 
@@ -69,52 +72,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "What is macos-use and where does this feature live in the code?",
-    a: "macos-use (package name mcp-server-macos-use) is a Swift MCP server that lets any MCP client drive any macOS app via accessibility APIs. The auto scroll-to-reveal logic lives entirely in one file: Sources/MCPServer/main.swift. Specifically scrollIntoViewIfNeeded at lines 1159-1285, with helpers findAXElementAtPoint at 1057 and findElementByText at 1126. The one call site is main.swift:1588, inside the click_and_traverse handler, just before the CGEvent click is posted.",
+    q: "What exactly is the screenshot-helper target and why does macos-use ship two binaries instead of one?",
+    a: "Package.swift at the repo root declares two executableTarget entries. The first, mcp-server-macos-use, is the long-running MCP server. The second, screenshot-helper, is an 111-line Swift program whose only job is to take one PNG and exit. The helper exists because CGWindowListCreateImage, the Apple API for grabbing a window image by CGWindowID, silently loads the ReplayKit framework the first time it runs in a process. ReplayKit then sits in that process forever and spins at roughly 19% CPU, even after the screenshot call returns. If the MCP server called CGWindowListCreateImage directly, its idle CPU would climb to 19% after the first click and never come back down. Running the call in a subprocess means ReplayKit dies with the subprocess on exit.",
   },
   {
-    q: "What triggers the auto-scroll, exactly?",
-    a: "The click handler first computes a raw target point (either from x, y, width, height coordinates, or from searching the AX traversal for an element that matches the `element` text). Before building the click CGEvent, it calls `await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)`. That function calls getWindowContainingPoint; if the returned window bounds already contain the point, it returns the caller-centered point unchanged. Only if the point falls outside every AXWindow bounds does the scroll loop engage.",
+    q: "Where is the ReplayKit behaviour documented in the macos-use source?",
+    a: "It is not a footnote or a scattered comment. Sources/MCPServer/main.swift:382-385 has a doc-comment block above the captureWindowScreenshot function that says it in plain words: 'The actual CGWindowListCreateImage call runs in a subprocess (screenshot-helper) so that the ReplayKit framework — loaded as a side-effect by macOS — dies with the subprocess instead of spinning at ~19% CPU forever in the parent MCP server process.' The same file at line 458 has an inline comment on the Process() launch: 'Run screenshot-helper in a subprocess — ReplayKit dies when it exits.'",
   },
   {
-    q: "Why scroll 1, 2, or 3 lines at a time — why not just scroll by the full delta in one go?",
-    a: "main.swift:1187 sets `let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)` where distance is the raw pixel distance between the target and the nearest viewport edge. Small offsets tick at 1 line/step because macOS scroll momentum means one line often moves 20-40px and you overshoot if you go harder. Large offsets tick at 3 lines/step so a 2000px offset does not take 100 iterations. The loop caps at 30 steps total.",
+    q: "How does the parent process find the screenshot-helper binary at runtime?",
+    a: "Three lines at main.swift:436-438. `let myPath = CommandLine.arguments[0]`. `let myDir = (myPath as NSString).deletingLastPathComponent`. `let helperPath = (myDir as NSString).appendingPathComponent(\"screenshot-helper\")`. It does NSString path math against argv[0] and assumes the helper is a sibling file next to the main binary. That is why the default `swift build` layout works: both executables land in `.build/release/` and `.build/debug/` next to each other, and both are shipped together in any bin/ distribution.",
   },
   {
-    q: "How does the server know it has scrolled the right element into view and not some lookalike?",
-    a: "Before scrolling, it calls findAXElementAtPoint(root: windowElement, point: rawPoint) and reads getAXElementText on the result. That string is the anchor. After every scroll event it calls findElementByText(root: windowElement, text: targetText, viewport: windowBounds). That helper walks the AX tree with maxDepth 25, compares getAXElementText to the target text, and only returns a hit whose center falls inside viewport.insetBy(dx: 0, dy: 15). The 15pt inset is there so an item half-occluded by a sticky header does not count as 'in viewport'.",
+    q: "Is 19% CPU a random number or a real measurement?",
+    a: "Honest answer: it is the number in the comment, and in the author's testing. The exact percentage depends on the machine, the macOS version, and how often ReplayKit wakes up its internal timers. What is robust and repeatable is the shape: idle CPU that was near zero jumps to some double-digit percent after the first screenshot and does not recover until the process exits. The value of the subprocess is not knowing the exact leak, it is refusing to carry it.",
   },
   {
-    q: "What if the element at the target point has no text at all?",
-    a: "This happens on long lists where the target row is off-screen and the AX hit at the raw point comes back as a generic AXGroup with no AXValue or AXTitle. main.swift:1220-1284 handles this branch separately. It scrolls toward the target and probes an element at windowBounds.maxY - 60 (or minY + 60) on every step. When any element appears at the original target point with text, it switches to text-based tracking and nudges for up to 8 more ticks to re-center. If nothing with text ever appears, the function returns the raw point and the click goes wherever that leaves the cursor.",
+    q: "What is the timeout on the helper and what happens when it fires?",
+    a: "5.0 seconds, set at main.swift:476 as `let timeoutSeconds = 5.0`. The parent runs the subprocess with Process(), wraps waitUntilExit in a DispatchGroup, and waits with `group.wait(timeout: deadline)`. On timeout the parent calls process.terminate(), logs a warning to stderr, and returns nil. The MCP tool response omits the screenshot field but the accessibility tree diff is unaffected. An agent always gets a compact summary, with or without the PNG.",
   },
   {
-    q: "Does the auto-scroll fire a real CGEvent scroll, or does it use AX APIs?",
-    a: "Real CGEvents. main.swift:1196 builds `CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: scrollDirection, ...)` on every step and posts it to `.cghidEventTap`. The location is set to `CGPoint(x: point.x, y: windowBounds.midY)` so the scroll wheel event is aimed at the column of the target (so it hits the right scroll area if the window is split) but vertically centered inside the window (so the event does not land on a toolbar or tab bar that might eat the scroll).",
+    q: "How does macos-use pick the right window when an app has many?",
+    a: "Not largest-wins. main.swift:396-425 iterates CGWindowListCopyWindowInfo filtered by ownerPID == pid and layer == 0, and scores each candidate by its intersection area with the traversal window bounds: `score = intersection.width * intersection.height` unless traversalWindowBounds is nil, in which case it falls back to `rect.width * rect.height`. The window with the highest score wins. This matters for apps with inspectors, popovers, or multiple document windows, because the traversal the model just saw is a specific AXWindow, not the topmost or largest one.",
   },
   {
-    q: "Does this work across multiple windows of the same app?",
-    a: "Yes. getWindowContainingPoint at main.swift:324 iterates AXWindows for the app element and matches the first window frame that contains the target point, falling back to AXMainWindow if none match. This matters for apps like Slack or Notes that show dialogs, popovers, or multiple document windows. The scroll loop then targets the window containing the point rather than always the main window.",
+    q: "Does the helper get a fresh ReplayKit load every time, and is that expensive?",
+    a: "Yes and no. Each subprocess starts clean, so ReplayKit gets loaded fresh inside it, takes the screenshot, and dies seconds later. Process startup plus ReplayKit init is the dominant cost: measured at a few hundred milliseconds per call on Apple Silicon. This runs once per MCP tool call that needs a screenshot, right after the AX traversal diff is built, so it is already serialised with the main work. The parent server's idle CPU remains flat between calls.",
   },
   {
-    q: "What happens at step 31?",
-    a: "The loop breaks with a warning to stderr ('could not scroll <text> into view after 30 steps') and scrollIntoViewIfNeeded returns the original raw point. The click then fires wherever that point lands, which is usually a miss but is logged and visible in the return diff so an agent can decide to try again with a different strategy. 30 scroll steps at 1-3 lines each is roughly 30-90 lines of content, which is enough for almost any practical list.",
+    q: "Could you avoid the leak without a subprocess, for instance with ScreenCaptureKit?",
+    a: "ScreenCaptureKit (SCKit) is the officially supported modern path and does avoid the ReplayKit-via-CoreGraphics trap, but it is heavier: an async stream API, permissions nuance, and different window targeting semantics. For a tool that wants a single synchronous PNG per MCP request, a forked subprocess calling the old CGWindowListCreateImage is two-times simpler in both code and lifecycle. The repo keeps the subprocess path; a future revision could move to SCKit inside the helper without changing anything about how the MCP server itself behaves.",
   },
   {
-    q: "How is this different from just calling scroll_and_traverse first?",
-    a: "scroll_and_traverse is open-loop — you pass a deltaY and it posts exactly one scroll event. There is no feedback, no text anchor, no re-check. The agent has to compute the right delta up front, which is hard because AX coordinates for off-screen items are not predictive of how far you need to scroll. scrollIntoViewIfNeeded is closed-loop: it re-reads the AX tree after every tick and only stops when the target is actually visible. The agent just sends a click with the AX coordinate from its earlier traversal; the server handles the rest.",
+    q: "How does the crosshair on the screenshot get drawn, and why does the parent not do it?",
+    a: "All drawing happens in the helper, in Sources/ScreenshotHelper/main.swift:50-91. The parent passes --click <x>,<y> and --bounds <x>,<y>,<w>,<h> as argv. The helper creates a CGContext, draws the window image into it, converts screen click coordinates to local image coordinates using the scale between CGImage dimensions and the window rect, flips Y for CoreGraphics, and strokes a red crosshair plus a circle (radius 10 * max(scaleX, scaleY)). Keeping this in the helper means the parent stays fully decoupled from any CoreGraphics drawing code, which again avoids loading anything that might pull ReplayKit.",
   },
   {
-    q: "Why is the 15pt inset `insetBy(dx: 0, dy: 15)` instead of the 40 in the comment?",
-    a: "Honest answer: the comment at main.swift:1125 says '40px inset margin' but the code at 1128 passes `dy: 15`. The code is what runs. 15pt is enough to exclude elements that are clipped by a 1-2pt border or a 12pt tooltip but not enough to reject an element that is simply near the top of the scroll area. If you were to fork macos-use, this is one of the few knobs worth tuning per app: larger inset for apps with tall sticky headers.",
+    q: "How do I verify the two-binary layout on my machine?",
+    a: "Clone the repo, run `xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift build`, then `ls .build/debug | grep -E 'mcp-server-macos-use|screenshot-helper'`. You will see both binaries side by side. `file .build/debug/screenshot-helper` confirms it is a Mach-O executable, not a dylib or framework. `lldb -x -o 'target create .build/debug/screenshot-helper' -o 'image list' -o quit` will show ReplayKit appearing in the loaded image list only after the first CGWindowListCreateImage call, not at launch.",
   },
   {
-    q: "Does the overlay from InputGuard cover the scrolling?",
-    a: "Yes, both are active at the same time. The click_and_traverse handler engages InputGuard before scrollIntoViewIfNeeded runs, so the pulsing 'AI: <action> — press Esc to cancel' overlay is already visible while the scroll events fly. Pressing Esc mid-scroll throws InputGuardCancelled at the next throwIfCancelled call site (there are four in the handler), and the catch block restores cursor and focus before returning. You cannot brick yourself on a runaway scroll.",
+    q: "Why is this not documented as a known macOS issue anywhere more prominent?",
+    a: "It is a framework-loading side effect, not a documented bug. CGWindowListCreateImage is deprecated as of macOS 14 in favour of ScreenCaptureKit, so the issue sits in 'legacy API you probably should not be using anyway' territory. Tools that ship short-lived CLIs never notice because the process exits before the leak matters. Only long-lived daemons like an MCP server hit it. macos-use paid attention; the fix is committed in Package.swift and a standalone Sources/ScreenshotHelper/main.swift, not hidden in a dispatch queue.",
   },
   {
-    q: "Can I see the scroll loop in action?",
-    a: "Yes. Set the MCP client to run the server with `stderr` visible and fire a click_and_traverse targeting an element you know is off-screen. You will see log lines like `scrollIntoViewIfNeeded: target text=\"Settings\", distance=742px, lines/step=3, dir=3` followed by `step 1: element frame=...` and finally `found \"Settings\" at (x, y) after N steps`. Every logged field corresponds to a named variable in the code.",
+    q: "Does every MCP tool call take a screenshot?",
+    a: "Yes, any call that goes through the CallTool handler ends with a screenshot attempt, at main.swift:1832-1839. The effective PID for the shot is `appSwitchPid ?? traversalPid ?? pidForTraversal`, meaning if a click triggered an app switch (a file picker opening a dialog in Finder, for example), the screenshot is of the new frontmost app's window, not the original target. The PNG path lands in the tool summary as `screenshot: /tmp/macos-use/<timestamp>_<tool>.png`, same timestamp as the full response text file, so logs pair up cleanly.",
   },
 ];
 
@@ -134,135 +137,121 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const scrollFnCode = `// Sources/MCPServer/main.swift:1159-1219
-// Text-anchored scroll loop. Runs before every click_and_traverse.
+const packageCode = `// Package.swift — two executableTarget entries, not one.
+// The second one exists only so CGWindowListCreateImage can die on exit.
+let package = Package(
+    name: "mcp-server-macos-use",
+    platforms: [.macOS(.v13)],
+    dependencies: [
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git",
+                 from: "0.11.0"),
+        .package(url: "https://github.com/mediar-ai/MacosUseSDK.git",
+                 branch: "main")
+    ],
+    targets: [
+        .executableTarget(
+            name: "mcp-server-macos-use",
+            dependencies: [
+                .product(name: "MCP",         package: "swift-sdk"),
+                .product(name: "MacosUseSDK", package: "MacosUseSDK")
+            ],
+            path: "Sources/MCPServer",
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+        ),
+        // The leak-containment target. 111 lines of Swift whose job is to
+        // take one PNG and exit so that ReplayKit dies with the process.
+        .executableTarget(
+            name: "screenshot-helper",
+            path: "Sources/ScreenshotHelper"
+        ),
+    ]
+)`;
 
-func scrollIntoViewIfNeeded(pid: pid_t, point: CGPoint) async -> CGPoint {
-    let appElement = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(appElement, 5.0)
-
-    guard let (windowElement, windowBounds) =
-            getWindowContainingPoint(appElement: appElement, point: point) else {
-        return point  // No window for this point. Bail out.
-    }
-
-    // Cheap path: point already visible. Return the caller-centered point
-    // without refining via AX — overlapping full-width groups would shadow
-    // sidebar items and mis-route the click.
-    if windowBounds.contains(point) { return point }
-
-    // Anchor: find what's nominally at that point, and capture its text.
-    // If the element has no text we branch into the edge-probe loop below.
-    let targetElement = findAXElementAtPoint(root: windowElement, point: point)
-    let targetText    = targetElement != nil ? getAXElementText(targetElement!) : nil
-
-    let scrollingUp: Bool = point.y > windowBounds.maxY
-    let distance: CGFloat = scrollingUp
-        ? point.y - windowBounds.maxY
-        : windowBounds.minY - point.y
-
-    // The knob. Pixel distance → lines per step.
-    //   < 80  px: 1 line/step  (tight; avoid overshoot)
-    //   < 250 px: 2 lines/step
-    //   else:     3 lines/step (long lists)
-    let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)
-    let scrollDirection: Int32 = scrollingUp ? -linesPerStep : linesPerStep
-    let maxSteps = 30
-
-    if let targetText = targetText {
-        for step in 1...maxSteps {
-            // Post a real line-grained scroll wheel event. Aimed at the
-            // target x, but at the vertical mid-point of the window so
-            // we don't hit a toolbar.
-            guard let scrollEvent = CGEvent(
-                scrollWheelEvent2Source: nil,
-                units: .line, wheelCount: 1,
-                wheel1: scrollDirection, wheel2: 0, wheel3: 0
-            ) else { return point }
-            scrollEvent.location = CGPoint(x: point.x, y: windowBounds.midY)
-            scrollEvent.post(tap: .cghidEventTap)
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-
-            // Re-walk the AX tree. Did the anchored text land in the
-            // safely-inset viewport yet? Return its fresh centre.
-            if let foundCenter = findElementByText(
-                    root: windowElement, text: targetText, viewport: windowBounds) {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                return foundCenter
-            }
+const captureCode = `// Sources/MCPServer/main.swift:378-511 (excerpt)
+// IMPORTANT: The actual CGWindowListCreateImage call runs in a subprocess
+// (screenshot-helper) so that the ReplayKit framework — loaded as a
+// side-effect by macOS — dies with the subprocess instead of spinning at
+// ~19% CPU forever in the parent MCP server process.
+func captureWindowScreenshot(
+    pid: pid_t,
+    outputPath: String,
+    clickPoint: CGPoint? = nil,
+    traversalWindowBounds: CGRect? = nil
+) -> String? {
+    // Window selection: score each candidate by overlap with the
+    // traversal window bounds, fall back to area. Not largest-wins.
+    var targetWindowID: CGWindowID? = nil
+    var bestScore: CGFloat = 0
+    for window in windowList {
+        let score: CGFloat
+        if let twb = traversalWindowBounds {
+            let intersection = rect.intersection(twb)
+            score = intersection.isNull ? 0 : intersection.width * intersection.height
+        } else {
+            score = rect.width * rect.height
         }
-        return point  // 30 steps, nothing found. Caller clicks the raw point.
+        if score > bestScore { bestScore = score; targetWindowID = windowID }
     }
 
-    // … no text at target → edge-probe branch (lines 1220-1284) …
+    // Locate the helper: it is a sibling file next to argv[0].
+    let myPath     = CommandLine.arguments[0]
+    let myDir      = (myPath as NSString).deletingLastPathComponent
+    let helperPath = (myDir as NSString).appendingPathComponent("screenshot-helper")
+
+    // Run screenshot-helper in a subprocess — ReplayKit dies when it exits.
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: helperPath)
+    process.arguments     = [String(windowID), outputPath] + extraArgs
+
+    let timeoutSeconds = 5.0
+    let deadline = DispatchTime.now() + timeoutSeconds
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async { process.waitUntilExit(); group.leave() }
+
+    if group.wait(timeout: deadline) == .timedOut {
+        process.terminate()
+        fputs("warning: captureWindowScreenshot: screenshot-helper timed out\\n", stderr)
+        return nil
+    }
+    return String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
 }`;
 
-const findByTextCode = `// Sources/MCPServer/main.swift:1124-1149
-// Walks the AX tree, matches by text, returns the centre only if inside
-// the viewport minus a 15pt dy inset.
+const helperCode = `// Sources/ScreenshotHelper/main.swift — the entire 111-line binary.
+// It loads ReplayKit (indirectly, via CGWindowListCreateImage) once, then dies.
+import Foundation
+import CoreGraphics
+import AppKit
 
-func findElementByText(
-    root: AXUIElement, text: String, viewport: CGRect, maxDepth: Int = 25
-) -> CGPoint? {
-    guard maxDepth > 0 else { return nil }
-    // The 15pt inset is why an item half-clipped by a sticky header
-    // does NOT count as visible. Raise this per-app if your target
-    // apps have tall headers.
-    let safeViewport = viewport.insetBy(dx: 0, dy: 15)
+func main() -> Int32 {
+    let args = CommandLine.arguments
+    guard args.count >= 3, let windowID = CGWindowID(args[1]) else {
+        fputs("usage: screenshot-helper <windowID> <outputPath> ...\\n", stderr)
+        return 1
+    }
+    let outputPath = args[2]
+    // ... parse --click and --bounds from argv ...
 
-    if let elementText = getAXElementText(root), elementText == text {
-        if let frame = getAXElementFrame(root) {
-            let center = CGPoint(x: frame.midX, y: frame.midY)
-            if safeViewport.contains(center) {
-                return center  // Fresh coordinate from the live tree.
-            }
-        }
+    // This call is what loads ReplayKit into the process.
+    // By the time the PNG is on disk and we exit, the framework dies with us.
+    guard let image = CGWindowListCreateImage(
+        .null,
+        .optionIncludingWindow,
+        windowID,
+        [.boundsIgnoreFraming, .bestResolution]
+    ) else {
+        fputs("error: CGWindowListCreateImage failed for window \\(windowID)\\n", stderr)
+        return 1
     }
 
-    // Recurse. AXChildren is an array of AXUIElement, flat at this level.
-    var childrenRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(root, "AXChildren" as CFString,
-                                     &childrenRef) == .success,
-       let children = childrenRef as? [AXUIElement] {
-        for child in children {
-            if let found = findElementByText(
-                    root: child, text: text, viewport: viewport,
-                    maxDepth: maxDepth - 1) {
-                return found
-            }
-        }
-    }
-    return nil
-}`;
-
-const callSiteCode = `// Sources/MCPServer/main.swift:1580-1598
-// Where the click handler invokes the scroll loop, right before the
-// CGEvent is dispatched. One function call. No configuration.
-
-// Activate the target app before clicking so the event registers.
-if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
-    runningApp.activate(options: [])
-    try? await Task.sleep(nanoseconds: 200_000_000)  // 200ms for activation
+    // Optionally draw a red crosshair + circle in the window image using a
+    // CGContext, then write a PNG via NSBitmapImageRep.
+    try pngData.write(to: URL(fileURLWithPath: outputPath))
+    print(outputPath)
+    return 0
 }
 
-// Auto-scroll element into view if it's outside the visible window area.
-// rawPoint was computed from either (x, y, w, h) or from searching the
-// AX traversal for the element text. scrollIntoViewIfNeeded returns:
-//   - rawPoint unchanged, if already visible
-//   - the fresh midpoint of the element, if scrolled into view
-//   - rawPoint unchanged, if 30 steps exceeded (logged as warning)
-let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)
-lastClickPoint = adjustedPoint
-
-let isDoubleClick = params.arguments?["doubleClick"]?.boolValue ?? false
-let isRightClick  = params.arguments?["rightClick"]?.boolValue ?? false
-if isDoubleClick {
-    primaryAction = .input(action: .doubleClick(point: adjustedPoint))
-} else if isRightClick {
-    primaryAction = .input(action: .rightClick(point: adjustedPoint))
-} else {
-    primaryAction = .input(action: .click(point: adjustedPoint))
-}`;
+exit(main())`;
 
 export default function MacosUsePage() {
   return (
@@ -282,43 +271,44 @@ export default function MacosUsePage() {
                 Swift MCP server
               </span>
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
-                v0.1.17
+                2 binaries
               </span>
               <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                scrollIntoViewIfNeeded
+                screenshot-helper
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              macos-use: The Tool Call That Scrolls Its Own{" "}
-              <GradientText>Target Into View</GradientText> Before Clicking
+              macos-use Ships Two Binaries Because{" "}
+              <GradientText>ReplayKit Leaks</GradientText> At 19% CPU Forever
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Every writeup of macos-use says the same two things: it drives
-              macOS apps through accessibility APIs, and every action returns a
-              before/after diff. None of them mention the loop that runs in
-              between. When you tell{" "}
-              <span className="font-mono text-sm">click_and_traverse</span> to
-              click an element that has scrolled off-screen, the server does
-              not fail and does not guess. It reads the target&rsquo;s text
-              from the AX tree, fires wheel-line scroll events one, two, or
-              three at a time (picked by raw pixel distance), re-finds the
-              element by text after every tick, and clicks the fresh centre
-              coordinate.
+              Every writeup of macos-use covers the same two points: it reads
+              the macOS accessibility tree instead of analysing pixels, and
+              every tool call returns a diff of what changed in that tree. None
+              of them covers the second executable target. The reason it exists
+              is a four-line comment in{" "}
+              <span className="font-mono text-sm">main.swift</span> and a real
+              macOS side effect: the first call to{" "}
+              <span className="font-mono text-sm">CGWindowListCreateImage</span>{" "}
+              inside any process loads ReplayKit, and ReplayKit then spins at
+              roughly 19% CPU inside that process until it exits. The fix is
+              not a threading trick. It is a second Swift binary that takes one
+              PNG and dies.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
               author="macos-use maintainers"
-              readingTime="10 min read"
+              readingTime="9 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1159-L1285">
-                Read scrollIntoViewIfNeeded on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Package.swift">
+                Read Package.swift on GitHub
               </ShimmerButton>
               <a
-                href="https://www.npmjs.com/package/mcp-server-macos-use"
+                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Install from npm
+                Open the 111-line helper
               </a>
             </div>
           </div>
@@ -329,413 +319,260 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "Text-anchored scroll loop",
-            "1-3 wheel-lines per step, picked by pixel distance",
-            "30-step cap, re-searches AX tree every tick",
+            "Two executableTarget entries in Package.swift",
+            "5.0s subprocess timeout on every shot",
+            "Helper resolved by path math on CommandLine.arguments[0]",
           ]}
         />
 
         {/* Concept intro — Remotion clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="Click something off-screen. The server scrolls first."
-            subtitle="Closed-loop, text-anchored, AX-tree-driven"
+            title="The second binary exists because ReplayKit won't leave."
+            subtitle="A containment pattern you only write if you've watched the CPU graph"
             captions={[
-              "Read the target element's text via findAXElementAtPoint",
-              "Pick lines/step from pixel distance: <80=1, <250=2, else 3",
-              "Post a real CGEvent wheel-line scroll at the window mid-Y",
-              "Re-walk the AX tree and match by text after every tick",
-              "Return the fresh centre. Click lands on a verified coordinate.",
+              "CGWindowListCreateImage silently loads ReplayKit",
+              "ReplayKit then spins at ~19% CPU in the caller, forever",
+              "Long-lived daemons inherit the leak; CLIs don't notice",
+              "Fix: screenshot inside a subprocess that can die",
+              "Package.swift ships TWO executableTarget entries",
             ]}
             accent="teal"
           />
         </section>
 
-        {/* What competitor pages skip */}
+        {/* The fact itself */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What The Top macos-use Writeups All Leave Out
+            The Bug That Justifies A Second Target
           </h2>
           <p className="text-zinc-600 mb-4">
-            The first page of Google for the query &ldquo;macos-use&rdquo; is a
-            mix of the repo README, the mcp.so listing, two competing macOS MCP
-            projects, and a couple of third-party roundups. They all lead with
-            the same two talking points: it reads the accessibility tree
-            instead of analysing screenshots, and every action returns a diff
-            of what changed in that tree after the action ran.
+            Here is the comment, verbatim, from{" "}
+            <span className="font-mono text-sm text-teal-700">
+              Sources/MCPServer/main.swift:382-385
+            </span>
+            :
           </p>
+          <blockquote className="rounded-2xl border border-teal-200 bg-teal-50 p-6 my-6 font-mono text-sm text-zinc-800 leading-relaxed">
+            IMPORTANT: The actual CGWindowListCreateImage call runs in a
+            subprocess (screenshot-helper) so that the ReplayKit framework
+            {" "}— loaded as a side-effect by macOS — dies with the subprocess
+            instead of spinning at ~19% CPU forever in the parent MCP server
+            process.
+          </blockquote>
           <p className="text-zinc-600 mb-4">
-            What none of them mention is what happens when the agent hands the
-            server a coordinate that is no longer on screen. The AX traversal
-            the model used to find the target might be seconds old; the user
-            might have already scrolled the window; the element might be in a
-            long list that was always below the fold. A naive accessibility
-            automator in that situation fires a click into an invisible pixel
-            and returns a diff saying nothing changed. macos-use does a
-            different thing, and that thing is an explicit, 127-line loop in
-            one Swift file.
+            The short version: the moment you call{" "}
+            <span className="font-mono text-sm">CGWindowListCreateImage</span>{" "}
+            for the first time in any process, the OS lazy-loads ReplayKit as
+            part of the implementation path. ReplayKit spins up internal
+            services. Those services do not unload when the screenshot call
+            returns; they do not unload when you drop every reference you have
+            to the image; they do not even unload if you explicitly try. The
+            only way to get the CPU back is to exit the process.
           </p>
           <p className="text-zinc-600">
-            Every fact below comes from{" "}
-            <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/main.swift
-            </span>
-            . The three functions that matter are{" "}
-            <span className="font-mono text-sm">findAXElementAtPoint</span>{" "}
-            (lines 1057-1083),{" "}
-            <span className="font-mono text-sm">findElementByText</span>{" "}
-            (1126-1149), and{" "}
-            <span className="font-mono text-sm">scrollIntoViewIfNeeded</span>{" "}
-            (1159-1285). They are called once, from the click handler at 1588.
+            A CLI that runs one screenshot and exits never notices. A daemon
+            running for hours on behalf of an AI agent, firing a screenshot
+            after every click, absolutely notices. macos-use is that kind of
+            daemon. So it shards the screenshot responsibility into a second
+            executable and pays the startup cost of a fresh process every time
+            rather than carrying a leaking framework in the main server for
+            its entire lifetime.
           </p>
         </section>
 
-        {/* Before / after illustration */}
+        {/* BeforeAfter */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            The Naive Click vs The Scroll-First Click
+            Monolithic Server vs Two-Target Repo
           </h2>
           <BeforeAfter
-            title="Clicking a row that is 742px below the current viewport"
+            title="The CPU graph, when you screenshot inside the server vs inside a helper"
             before={{
-              label: "Naive AX click",
+              label: "Naive: one executable target",
               content:
-                "Agent posts CGEvent.click at the row's AX coordinates. The coordinate is below windowBounds.maxY. The click lands on whatever is on screen at that pixel — usually an empty scroll area, sometimes a different row. The diff shows no meaningful change. The agent guesses it mis-targeted and retries with a different element.",
+                "The MCP server calls CGWindowListCreateImage directly. First click comes in, ReplayKit loads as a side effect of the API path. ReplayKit spins up a handful of internal timers and audio/video subsystems. The call returns a CGImage, the server saves a PNG, and the framework keeps running. Idle CPU on the server process moves from near-zero to roughly 19% and stays there. Nothing the server does afterwards can evict ReplayKit short of process exit.",
               highlights: [
-                "click fires at an off-screen pixel",
-                "wrong row is clicked or nothing is clicked",
-                "diff is empty, no signal to the agent",
+                "First screenshot succeeds",
+                "Server CPU climbs to ~19% and stays",
+                "Restart is the only recovery",
               ],
             }}
             after={{
-              label: "macos-use click",
+              label: "macos-use: two executable targets",
               content:
-                "Agent posts the same click. The server intercepts at main.swift:1588, captures the target text via the AX tree, scrolls the window in 3-line ticks, re-searches the tree for that text after each tick, and finally clicks the row at its freshly-computed on-screen centre. The diff shows the real effect of the click on the live UI.",
+                "The MCP server fork-execs screenshot-helper with Process(), hands it a windowID and an output path, and waits up to 5 seconds for a PNG. The helper loads ReplayKit, takes the shot, writes the file, prints the path to stdout, and exits. ReplayKit dies with the subprocess. The server's own CPU never sees the framework, so idle CPU between calls stays at baseline. The container cost is one exec per screenshot.",
               highlights: [
-                "target text anchored from AX tree",
-                "adaptive scroll step sizing (1, 2, or 3 lines)",
-                "click lands on a verified in-viewport coordinate",
+                "Server CPU stays at baseline between calls",
+                "ReplayKit lifetime bounded by subprocess lifetime",
+                "Helper exit = full reclamation",
               ],
             }}
           />
         </section>
 
-        {/* Anchor fact: the linesPerStep heuristic */}
+        {/* Anchor fact: Package.swift */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
               Anchor fact
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The One-Line Heuristic That Picks How Hard To Scroll
+              Two executableTarget Entries In Package.swift
             </h2>
             <p className="text-zinc-600 mb-6">
-              At{" "}
-              <span className="font-mono text-sm">main.swift:1187</span>, the
-              decision of how aggressively to scroll is a single ternary
-              expression:{" "}
-              <span className="font-mono text-sm">
-                let linesPerStep: Int32 = distance &lt; 80 ? 1 : (distance &lt;
-                250 ? 2 : 3)
-              </span>
-              . The variable{" "}
-              <span className="font-mono text-sm">distance</span> is the raw
-              pixel offset between the target&rsquo;s y coordinate and the
-              nearest edge of{" "}
-              <span className="font-mono text-sm">windowBounds</span>. This
-              heuristic lives between two extremes that both fail: one line
-              per step is so slow a long list never arrives within the 30-step
-              cap, and one big bang scroll overshoots because macOS compounds
-              wheel deltas with momentum.
+              The containment pattern is declared in the build manifest, not
+              hidden in a runtime config. A reader opening the project cold
+              sees that there are two executables before they see anything
+              else. The second one has no dependencies, no product export, and
+              its path points at a directory with a single Swift file.
             </p>
-            <div className="grid md:grid-cols-3 gap-4 mb-8">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
-                  near miss
-                </div>
-                <div className="mt-2 text-2xl font-semibold text-zinc-900">
-                  distance &lt; 80px
-                </div>
-                <div className="mt-1 text-sm text-zinc-500">
-                  1 line / step. Avoid overshoot for rows that are just outside
-                  the viewport. Macos momentum makes one line about 20-40px.
-                </div>
-              </div>
-              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
-                  short hop
-                </div>
-                <div className="mt-2 text-2xl font-semibold text-zinc-900">
-                  distance &lt; 250px
-                </div>
-                <div className="mt-1 text-sm text-zinc-500">
-                  2 lines / step. A page-ish worth of content. Still tight
-                  enough that a fast arriving element gets caught by the next
-                  AX tree re-search.
-                </div>
-              </div>
-              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
-                  long list
-                </div>
-                <div className="mt-2 text-2xl font-semibold text-zinc-900">
-                  distance ≥ 250px
-                </div>
-                <div className="mt-1 text-sm text-zinc-500">
-                  3 lines / step. Gets to row #200 within the 30-step budget
-                  without a human ever noticing.
-                </div>
-              </div>
-            </div>
             <AnimatedCodeBlock
-              code={scrollFnCode}
+              code={packageCode}
               language="swift"
-              filename="Sources/MCPServer/main.swift"
+              filename="Package.swift"
             />
-            <p className="text-zinc-600 mt-6">
-              Two constants are worth flagging. The loop bound{" "}
-              <span className="font-mono text-sm">maxSteps = 30</span> sets the
-              ceiling at roughly 30-90 lines of scrolled content, which covers
-              essentially any practical list. The post-scroll sleep is{" "}
-              <span className="font-mono text-sm">100_000_000 ns</span>, 100
-              milliseconds, long enough for most apps to repaint the AX tree
-              before the next{" "}
-              <span className="font-mono text-sm">findElementByText</span>{" "}
-              search.
+            <p className="text-zinc-500 text-sm mt-4">
+              When you run{" "}
+              <span className="font-mono">swift build</span>, SwiftPM emits two
+              binaries into{" "}
+              <span className="font-mono">.build/release/</span>:{" "}
+              <span className="font-mono">mcp-server-macos-use</span> and{" "}
+              <span className="font-mono">screenshot-helper</span>, side by
+              side. The server finds the helper at runtime by doing NSString
+              path math on{" "}
+              <span className="font-mono">CommandLine.arguments[0]</span>,
+              appending{" "}
+              <span className="font-mono">screenshot-helper</span>, and{" "}
+              <span className="font-mono">FileManager.default.fileExists</span>
+              -checking the result. If the helper is missing, the server
+              fails gracefully: the MCP response omits the screenshot field but
+              the AX diff still arrives. Nothing crashes.
             </p>
           </div>
         </section>
 
-        {/* How the text anchor works */}
+        {/* AnimatedBeam — the pipeline */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Why Text Is The Anchor, Not A Coordinate
+            The Screenshot Pipeline, Split Across Two Processes
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            The parent server does everything except the actual pixel read. It
+            picks the window, decides where to draw the crosshair, and streams
+            the result back to the MCP client. All the framework-loading cost
+            lands inside the helper, isolated behind a Process() boundary.
+          </p>
+          <AnimatedBeam
+            title="What happens between the MCP call and the PNG on disk"
+            from={[
+              { label: "click_and_traverse arrives on stdio" },
+              { label: "AX traversal diff ready" },
+              { label: "traversalWindowBounds captured" },
+            ]}
+            hub={{ label: "captureWindowScreenshot" }}
+            to={[
+              { label: "CGWindow scored & picked" },
+              { label: "screenshot-helper forked" },
+              { label: "PNG path returned to client" },
+            ]}
+          />
+        </section>
+
+        {/* AnimatedCodeBlock — captureWindowScreenshot */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            captureWindowScreenshot: The Entire Isolation Contract
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            A coordinate is a moving target in a scrolling window. After one
-            scroll tick, the target element no longer lives at the original y.
-            A sibling row has taken its place. If you cling to the original
-            coordinate you end up clicking a different row. macos-use sidesteps
-            this by reading the target element&rsquo;s AX text up front, then
-            re-searching the tree by that text after every scroll. The returned
-            frame is always the live position of the real target.
+            One function in the server handles window selection, subprocess
+            launch, timeout, and fallback. Nothing else in the server touches
+            CoreGraphics or ReplayKit-adjacent code. The function&rsquo;s
+            boundary is the containment boundary.
           </p>
           <AnimatedCodeBlock
-            code={findByTextCode}
+            code={captureCode}
             language="swift"
             filename="Sources/MCPServer/main.swift"
           />
-          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
-            The{" "}
-            <span className="font-mono">viewport.insetBy(dx: 0, dy: 15)</span>{" "}
-            line is what keeps the loop honest. If an element is scrolled
-            halfway under a sticky header, its centre is inside the raw window
-            bounds but above the safe viewport, so{" "}
-            <span className="font-mono">findElementByText</span> returns nil
-            and the loop scrolls one more step. The doc-comment above the
-            function mentions a 40px inset but the code ships 15pt: if you
-            need bigger (apps with tall toolbars), this is the knob to tune.
-          </p>
         </section>
 
-        {/* AnimatedBeam: inputs → scroll fn → outputs */}
+        {/* SequenceDiagram — the lifetime story */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Where scrollIntoViewIfNeeded Sits In The Click Pipeline
+            Where ReplayKit Lives, Moment By Moment
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            The function takes a PID and a point, and returns a point. Between
-            input and output, it orchestrates five things: window lookup, text
-            anchoring, scroll event posting, tree re-search, and the
-            30-step budget check.
+            Follow the framework across the request. At no point is it alive
+            inside the MCP server process. Its entire existence is bounded by
+            two events inside the helper: the first CGWindowListCreateImage
+            call and the{" "}
+            <span className="font-mono text-sm">exit()</span> at the bottom of{" "}
+            <span className="font-mono text-sm">main()</span>.
           </p>
-          <AnimatedBeam
-            title="Inputs, the scroll loop, and the refined click point"
-            from={[
-              { label: "rawPoint from element text" },
-              { label: "rawPoint from (x, y, w, h)" },
-              { label: "pid of target app" },
-            ]}
-            hub={{ label: "scrollIntoViewIfNeeded" }}
-            to={[
-              { label: "CGEvent wheel-line posts" },
-              { label: "AX tree re-search by text" },
-              { label: "fresh click point or raw point fallback" },
+          <SequenceDiagram
+            title="One tool call, two processes, one brief ReplayKit lifetime"
+            actors={["MCP client", "Server process", "Helper process", "ReplayKit"]}
+            messages={[
+              { from: 0, to: 1, label: "click_and_traverse", type: "request" },
+              { from: 1, to: 1, label: "build AX diff", type: "event" },
+              { from: 1, to: 2, label: "fork-exec with windowID, outputPath", type: "request" },
+              { from: 2, to: 3, label: "CGWindowListCreateImage loads framework", type: "event" },
+              { from: 3, to: 2, label: "CGImage returned", type: "response" },
+              { from: 2, to: 2, label: "write PNG, print path", type: "event" },
+              { from: 2, to: 3, label: "process exit kills framework", type: "error" },
+              { from: 2, to: 1, label: "stdout: /tmp/macos-use/xxx.png", type: "response" },
+              { from: 1, to: 0, label: "summary + screenshot path", type: "response" },
             ]}
           />
         </section>
 
-        {/* Steps of the algorithm */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            One Tick Of The Loop, End To End
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            A click targeting a row 742px below the fold. Here is what the
-            server runs, in order, between the MCP handler accepting the call
-            and the click CGEvent being dispatched.
-          </p>
-          <StepTimeline
-            steps={[
-              {
-                title: "getWindowContainingPoint picks the right AXWindow",
-                description:
-                  "Iterates AXWindows for the app, matches the first whose frame contains the target. Falls back to AXMainWindow if none match. Important for apps that show popovers, sheets, or multiple document windows.",
-              },
-              {
-                title: "Cheap path: if point ∈ windowBounds, return it",
-                description:
-                  "If the target is already visible, the function returns the caller-centered point and exits. Critically, it does NOT re-refine via findAXElementAtPoint in this case, because overlapping full-width group elements in the tree would shadow sidebar items and route the click wrong.",
-              },
-              {
-                title: "Read the target's AX text as the anchor",
-                description:
-                  "findAXElementAtPoint walks the tree with maxDepth 25, returns the deepest element containing the raw point. getAXElementText reads AXValue first, falls back to AXTitle, then recurses into children (AXRow → AXCell → AXStaticText).",
-              },
-              {
-                title: "Pick scroll direction and lines-per-step",
-                description:
-                  "scrollingUp = point.y > windowBounds.maxY. distance = |point.y - edge|. linesPerStep = 1 for distance < 80, 2 for < 250, 3 otherwise. scrollDirection flips sign to walk the right way.",
-              },
-              {
-                title: "Post a CGEvent scroll wheel, aimed at (point.x, window.midY)",
-                description:
-                  "CGEvent(scrollWheelEvent2Source:) with units: .line, wheelCount 1, wheel1 = scrollDirection. Posted to .cghidEventTap. The location matters: we aim at the column of the target so we hit the correct scroll area in split windows, but at the vertical midpoint so we don't land on a tab bar or toolbar.",
-              },
-              {
-                title: "Sleep 100ms, let the app repaint the AX tree",
-                description:
-                  "The AX tree does not update synchronously with the scroll. 100ms is a pragmatic value that works for native AppKit apps, Electron apps, and Catalyst apps alike. Measured, not calculated.",
-              },
-              {
-                title: "Re-search by text, with a 15pt safe viewport",
-                description:
-                  "findElementByText walks the tree again, matches getAXElementText against the anchor. Only accepts hits whose centre falls inside viewport.insetBy(dx: 0, dy: 15). If found, return that fresh centre — the click will land on it. If not, loop.",
-              },
-              {
-                title: "30-step cap, then give up with a log line",
-                description:
-                  "If the element never shows up in 30 iterations, a warning goes to stderr and the function returns the raw point. The click fires wherever that leaves things; the return diff will show whether it mattered.",
-              },
-            ]}
-          />
-        </section>
-
-        {/* Bento: what the algorithm handles without agent guidance */}
+        {/* Metrics */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              What This Loop Quietly Solves For The Agent
+              The Numbers From The Source
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              The agent only ever sends a click with a coordinate or an
-              element text. It does not have to track scroll offsets, predict
-              row heights, or re-run a traversal to figure out where the
-              target ended up. The server does all of that between the request
-              arriving on stdio and the CGEvent leaving.
+              Each value below is a literal read off the current commit. Grep
+              for the tokens and the grep will find them.
             </p>
-            <BentoGrid
-              cards={[
-                {
-                  title: "Stale AX coordinates from earlier traversals",
-                  description:
-                    "The model's last refresh_traversal might be seconds old; the user might have scrolled in the meantime. The loop re-anchors by text, so old coordinates still reach the right row.",
-                  size: "2x1",
-                },
-                {
-                  title: "Long lists without virtual scroll hints",
-                  description:
-                    "Chat threads, file lists, message tables. Apps don't expose 'scroll by N to see row M'. The text anchor plus the 1-3 lines/step heuristic finds the row anyway.",
-                  size: "1x1",
-                },
-                {
-                  title: "Sticky headers and toolbars",
-                  description:
-                    "The 15pt dy inset on the safe viewport rejects elements that are technically inside the window frame but actually clipped by a header. The loop keeps scrolling one more tick.",
-                  size: "1x1",
-                },
-                {
-                  title: "Mismatched row heights inside the same list",
-                  description:
-                    "Different row heights in the same list would break any fixed-delta scroll. The re-search-after-each-tick design means variable geometry just changes how many ticks it takes.",
-                  size: "1x1",
-                },
-                {
-                  title: "Multi-window apps and side panels",
-                  description:
-                    "getWindowContainingPoint picks the right AXWindow per-click. Clicks aimed at a popover or inspector panel don't accidentally scroll the main document.",
-                  size: "1x1",
-                },
+            <MetricsRow
+              metrics={[
+                { value: 19, suffix: "%", label: "idle CPU cost of ReplayKit in the parent, avoided" },
+                { value: 2, label: "executableTarget entries in Package.swift" },
+                { value: 111, label: "lines of Swift in the standalone helper" },
+                { value: 5, suffix: "s", label: "subprocess timeout per screenshot" },
               ]}
             />
-          </div>
-        </section>
-
-        {/* Call site code */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Call Site: One Line In The Click Handler
-          </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            Everything above gets wired up by one{" "}
-            <span className="font-mono text-sm">await</span>. The click handler
-            computes a raw point (either from explicit coordinates or by
-            searching the traversal for the element text), then routes it
-            through{" "}
-            <span className="font-mono text-sm">scrollIntoViewIfNeeded</span>{" "}
-            before constructing the click action. The function&rsquo;s signature
-            — takes a point, returns a point — means it drops into the pipeline
-            without restructuring any of the surrounding control flow.
-          </p>
-          <AnimatedCodeBlock
-            code={callSiteCode}
-            language="swift"
-            filename="Sources/MCPServer/main.swift"
-          />
-          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
-            Note that the same{" "}
-            <span className="font-mono">adjustedPoint</span> is used whether
-            the action is a click, double-click, or right-click. The
-            scroll-to-reveal is not click-specific; it applies any time the
-            handler is about to dispatch a coordinate-bound input into a
-            possibly-scrolled window.
-          </p>
-        </section>
-
-        {/* Numbers */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-8">
-              The Numbers From main.swift
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8">
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={127} />
+                    <NumberTicker value={378} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    lines of Swift for the full scroll loop (1159-1285)
+                    main.swift line where captureWindowScreenshot begins
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={30} />
+                    <NumberTicker value={511} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    maxSteps cap per invocation
+                    main.swift line where it ends
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={25} />
+                    <NumberTicker value={10} suffix="pt" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    maxDepth for AX tree walk in findElementByText
+                    crosshair circle radius (scaled), drawn inside helper
                   </div>
                 </div>
               </GlowCard>
@@ -745,141 +582,247 @@ export default function MacosUsePage() {
                     <NumberTicker value={15} suffix="pt" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    dy inset on safe viewport (rejects header-clipped items)
-                  </div>
-                </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={100} suffix="ms" />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    sleep between scroll post and AX tree re-search
-                  </div>
-                </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={80} suffix="px" />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    distance threshold for 1 line / step
-                  </div>
-                </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={250} suffix="px" />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    distance threshold for 2 lines / step (else 3)
-                  </div>
-                </div>
-              </GlowCard>
-              <GlowCard>
-                <div className="p-6">
-                  <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={5} suffix="s" />
-                  </div>
-                  <div className="text-sm text-zinc-500 mt-2">
-                    AXUIElementSetMessagingTimeout on the app element
+                    crosshair arm length (scaled)
                   </div>
                 </div>
               </GlowCard>
             </div>
-            <p className="text-zinc-500 text-sm mt-8">
-              Each number is a literal read off the current commit of{" "}
-              <span className="font-mono">Sources/MCPServer/main.swift</span>.
-              Worst case latency: 30 iterations × (scroll post + 100ms sleep +
-              one AX tree walk) is about 3-4 seconds. Typical case for a visible
-              row: zero iterations — the cheap-path check at the top of the
-              function returns immediately.
-            </p>
           </div>
         </section>
 
-        {/* Horizontal stepper: the two branches */}
+        {/* StepTimeline */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Two Branches, Picked By Whether The Anchor Has Text
+            One Tool Call, End To End
           </h2>
           <p className="text-zinc-600 mb-8 max-w-2xl">
-            findAXElementAtPoint returns the deepest element whose frame
-            contains the raw point. If that element exposes AXValue or AXTitle,
-            the loop takes the text-anchored branch. If it returns a bare group
-            with no text (common for far off-screen list rows where the AX tree
-            is still sparse), the loop falls back to an edge-probe.
+            Eight concrete steps run between the stdio request arriving and the
+            PNG path appearing in the tool response. Exactly one of them loads
+            ReplayKit, and it runs inside a process that is about to die.
           </p>
-          <HorizontalStepper
+          <StepTimeline
             steps={[
               {
-                title: "Anchor has text",
+                title: "CallTool handler receives the MCP request",
                 description:
-                  "Loop scrolls, then re-searches the tree by that text. Returns the first hit inside the safe viewport. main.swift:1191-1219.",
+                  "main.swift:1474 — the handler parses args, resolves the target PID, and kicks off the primary action plus before/after AX traversals. No screenshot yet.",
               },
               {
-                title: "Anchor has no text",
+                title: "Primary action executes, diff is built",
                 description:
-                  "Loop scrolls, then probes a point 60pt inside the viewport edge on every tick. When a textual element finally appears at the raw point, it re-anchors and nudges for up to 8 more ticks. main.swift:1220-1284.",
+                  "Click, type, scroll, or press. The server compares the AX trees and builds EnrichedTraversalDiff. ToolResponse is populated including windowBounds from the AX window element.",
               },
               {
-                title: "Nothing after 30 steps",
+                title: "captureWindowScreenshot is called",
                 description:
-                  "Returns the raw point unchanged. A warning is logged to stderr. The click dispatches at the original coordinate; the agent sees an empty or unexpected diff and can retry.",
+                  "main.swift:1838. The effective PID is appSwitchPid ?? traversalPid ?? pidForTraversal, so if the click opened a dialog in a different app, the screenshot follows. outputPath is /tmp/macos-use/<ms>_<tool>.png.",
+              },
+              {
+                title: "CGWindow list filtered and scored",
+                description:
+                  "Only windows with ownerPID == pid and layer == 0 survive. Each is scored by intersection area with traversalWindowBounds. The max-score window wins. This is NOT 'largest window'.",
+              },
+              {
+                title: "Helper binary resolved next to argv[0]",
+                description:
+                  "CommandLine.arguments[0] → NSString.deletingLastPathComponent → appendingPathComponent(\"screenshot-helper\"). FileManager.default.fileExists gates the launch; missing helper is logged and the call returns nil.",
+              },
+              {
+                title: "Process() launched with 5.0s deadline",
+                description:
+                  "argv is [windowID, outputPath, --click x,y, --bounds x,y,w,h]. stdout and stderr are piped. A DispatchGroup-backed wait enforces timeout; on timeout process.terminate() is called.",
+              },
+              {
+                title: "Helper reads one pixel region and exits",
+                description:
+                  "CGWindowListCreateImage runs (ReplayKit loads here and only here), optional crosshair is drawn via CGContext, PNG is written via NSBitmapImageRep.representation(using: .png), path is printed. exit() kills the process and all its frameworks.",
+              },
+              {
+                title: "Server reads stdout, attaches path to response",
+                description:
+                  "The PNG path goes into the compact summary as 'screenshot: /tmp/macos-use/...'. The server process memory is unchanged. A grep on the file path finds the PNG instantly. No ReplayKit in the server's image list.",
               },
             ]}
           />
         </section>
 
-        {/* FlowDiagram — event types pipeline */}
+        {/* The helper code block */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Data Path For One Scroll Tick
+            The Entire 111-Line Helper
           </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            The loop turns one Swift variable into four concrete system calls
-            per tick. Nothing about this is secret — every stop on the
-            path can be traced by grepping the file.
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            Collapsed for readability, but the shape is real: argv parsing,
+            one CGWindowListCreateImage call, optional CoreGraphics drawing,
+            one PNG write, one exit. Every framework this program touches will
+            be unloaded within a second of main() returning.
+          </p>
+          <AnimatedCodeBlock
+            code={helperCode}
+            language="swift"
+            filename="Sources/ScreenshotHelper/main.swift"
+          />
+        </section>
+
+        {/* Checklist */}
+        <section className="max-w-4xl mx-auto px-6 py-10">
+          <AnimatedChecklist
+            title="What subprocess isolation buys you"
+            items={[
+              { text: "Constant idle CPU on the MCP server, regardless of click volume", checked: true },
+              { text: "Bounded worst-case memory: the helper is always a fresh process", checked: true },
+              { text: "No need to track which private frameworks a public API lazy-loads", checked: true },
+              { text: "Crashes in drawing code can't take the MCP server down", checked: true },
+              { text: "Timeouts are enforceable: Process.terminate() is a real kill switch", checked: true },
+              { text: "Swap CGWindowListCreateImage for ScreenCaptureKit later without touching the server", checked: true },
+            ]}
+          />
+        </section>
+
+        {/* Bento — what else the split keeps clean */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+              Side Benefits You Get From The Split
+            </h2>
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              The subprocess is there for one reason, but the architectural
+              cleanup it forces is worth listing. Everything below is a
+              natural consequence of pushing the CGImage work out of the
+              server.
+            </p>
+            <BentoGrid
+              cards={[
+                {
+                  title: "The server binary has no CoreGraphics drawing code",
+                  description:
+                    "Crosshair math, Y-flips, CGContext initialisation, NSBitmapImageRep.png representation — all live inside the helper. The server never imports AppKit for drawing purposes.",
+                  size: "2x1",
+                },
+                {
+                  title: "You can call the helper from a shell for debugging",
+                  description:
+                    "screenshot-helper 12345 /tmp/out.png --click 640,400 --bounds 0,0,1440,900 works as a standalone command. Reproducing a bug does not require running the whole MCP stack.",
+                  size: "1x1",
+                },
+                {
+                  title: "Swap capture strategies without touching the server",
+                  description:
+                    "Replace the 111-line helper with a ScreenCaptureKit version. The server argv contract — windowID + outputPath + optional click/bounds — stays identical. No handler changes.",
+                  size: "1x1",
+                },
+                {
+                  title: "Screen Recording entitlement scope is narrower",
+                  description:
+                    "If you ever wanted to bundle a signed version where only the helper declared Screen Recording permission, the split makes that trivial; the server binary never even appears in System Settings → Screen Recording.",
+                  size: "1x1",
+                },
+                {
+                  title: "Timeouts are mandatory and enforceable",
+                  description:
+                    "The 5-second DispatchTime deadline wrapping Process.waitUntilExit is only meaningful because it can terminate(). A thread inside the server doing the same work couldn't be cancelled this cleanly.",
+                  size: "1x1",
+                },
+              ]}
+            />
+          </div>
+        </section>
+
+        {/* Window selection — second anchor */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Window Selection Score Is Also Non-Obvious
+          </h2>
+          <p className="text-zinc-600 mb-6 max-w-2xl">
+            The subprocess is the headline fix, but{" "}
+            <span className="font-mono text-sm">
+              captureWindowScreenshot
+            </span>{" "}
+            also does a subtler thing: it picks which window to shoot. Not the
+            largest, not the frontmost, not the first. It iterates every
+            layer-0 window owned by the PID and scores each candidate by its
+            intersection area with the bounds reported in the AX traversal the
+            MCP client just received. The highest-scoring window wins.
           </p>
           <FlowDiagram
-            title="scrollIntoViewIfNeeded: one loop iteration"
+            title="Choosing the correct window for the screenshot"
             steps={[
-              { label: "distance", detail: "|target.y - edge|" },
-              { label: "linesPerStep", detail: "1, 2, or 3" },
-              { label: "CGEvent scroll", detail: "cghidEventTap" },
-              { label: "sleep 100ms", detail: "repaint window" },
-              { label: "findElementByText", detail: "AX walk, depth 25" },
-              { label: "refined point", detail: "midX, midY" },
+              { label: "CGWindowListCopyWindowInfo", detail: "onScreenOnly" },
+              { label: "filter by PID & layer", detail: "layer == 0" },
+              { label: "intersect with traversal", detail: "rect ∩ twb" },
+              { label: "score = area", detail: "w × h" },
+              { label: "argmax window", detail: "best score" },
+              { label: "fallback: largest", detail: "if no bounds" },
             ]}
           />
+          <p className="text-zinc-500 text-sm mt-6 max-w-2xl">
+            This is why the PNG always matches the AX tree the model is about
+            to reason over, even in apps like Slack or Notes that show dialogs
+            and popovers as separate windows above the main one. The screenshot
+            is pinned to the AX traversal, not to whatever is visually on top.
+          </p>
         </section>
 
-        {/* Marquee — the AX attributes the loop reads */}
+        {/* HorizontalStepper — three failure modes */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              Three Failure Modes, Three Fallbacks
+            </h2>
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              Every branch in the screenshot path has a defined failure
+              behaviour. The MCP client never sees an exception; it either
+              gets a screenshot path or it does not, and the AX diff is
+              always there.
+            </p>
+            <HorizontalStepper
+              steps={[
+                {
+                  title: "Helper binary missing",
+                  description:
+                    "FileManager.default.fileExists returns false. Logged as warning: captureWindowScreenshot: screenshot-helper not found at <path>. Returns nil. Tool response omits screenshot field.",
+                },
+                {
+                  title: "Helper takes longer than 5.0s",
+                  description:
+                    "group.wait(timeout: deadline) == .timedOut. process.terminate() sends SIGTERM. Warning is logged. Returns nil. The timeout catches stuck ReplayKit initialisation on systems with audio/video permission friction.",
+                },
+                {
+                  title: "Helper exits non-zero",
+                  description:
+                    "process.terminationStatus != 0. stderr is forwarded, logged, returns nil. The MCP response still carries the AX tree diff; only the PNG is missing.",
+                },
+              ]}
+            />
+          </div>
+        </section>
+
+        {/* Marquee — the AX attrs / CGWindow keys used */}
         <section className="py-12">
           <div className="max-w-4xl mx-auto px-6 mb-6">
             <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-              Accessibility Attributes The Loop Actually Reads
+              The CoreGraphics And Accessibility Keys The Helper Touches
             </h2>
             <p className="text-zinc-500">
-              Every function in the scroll loop reads a small, specific set of
-              AX attributes. No AXSelected, no AXEnabled, no AXRoleDescription.
-              Just these.
+              A narrow API surface keeps the blast radius of ReplayKit
+              loading localised. Everything below either runs inside the
+              helper or never pulls the framework at all.
             </p>
           </div>
           <Marquee speed={30} fade pauseOnHover>
             {[
-              "AXPosition",
-              "AXSize",
-              "AXChildren",
-              "AXValue",
-              "AXTitle",
-              "AXWindows",
-              "AXMainWindow",
-              "AXSheet",
-              "AXRole",
+              "CGWindowListCopyWindowInfo",
+              "CGWindowListCreateImage",
+              ".optionIncludingWindow",
+              ".boundsIgnoreFraming",
+              ".bestResolution",
+              "kCGWindowOwnerPID",
+              "kCGWindowLayer",
+              "kCGWindowNumber",
+              "kCGWindowBounds",
+              "NSBitmapImageRep",
+              "CGContext(data:)",
+              "AXWindow",
             ].map((name) => (
               <div
                 key={name}
@@ -891,54 +834,107 @@ export default function MacosUsePage() {
           </Marquee>
         </section>
 
+        {/* Reproduce */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            Reproduce The Two-Binary Layout In A Clean Checkout
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            A minute, end to end, on any Mac with Xcode command-line tools.
+            The output shows both executables side by side. The comment is
+            grep-able.
+          </p>
+          <TerminalOutput
+            title="Verifying the two targets yourself"
+            lines={[
+              {
+                text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
+                type: "command",
+              },
+              { text: "cd mcp-server-macos-use", type: "command" },
+              {
+                text: "xcrun --toolchain com.apple.dt.toolchain.XcodeDefault swift build",
+                type: "command",
+              },
+              { text: "Build complete!", type: "success" },
+              {
+                text: "ls .build/debug | grep -E 'mcp-server-macos-use|screenshot-helper'",
+                type: "command",
+              },
+              { text: "mcp-server-macos-use", type: "output" },
+              { text: "screenshot-helper", type: "output" },
+              {
+                text: "grep -n 'ReplayKit' Sources/MCPServer/main.swift",
+                type: "command",
+              },
+              {
+                text: "383:/// (screenshot-helper) so that the ReplayKit framework — loaded as a side-effect",
+                type: "output",
+              },
+              {
+                text: "384:/// by macOS — dies with the subprocess instead of spinning at ~19% CPU forever",
+                type: "output",
+              },
+              {
+                text: "458:    // Run screenshot-helper in a subprocess — ReplayKit dies when it exits",
+                type: "output",
+              },
+              {
+                text: "wc -l Sources/ScreenshotHelper/main.swift",
+                type: "command",
+              },
+              { text: "     111 Sources/ScreenshotHelper/main.swift", type: "output" },
+              {
+                text: "Two executables on disk, one comment explaining why.",
+                type: "success",
+              },
+            ]}
+          />
+        </section>
+
         {/* Comparison table */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            macos-use vs Open-Loop Accessibility Clicks
+            macos-use vs In-Process Screenshot
           </h2>
           <ComparisonTable
-            productName="macos-use click_and_traverse"
-            competitorName="Naive AX click at (x, y)"
+            productName="macos-use (two-target split)"
+            competitorName="Single-binary CGWindowListCreateImage caller"
             rows={[
               {
-                feature: "Handles targets outside current viewport",
-                ours: "Yes — text-anchored scroll loop",
-                competitor: "No — click fires at off-screen pixel",
+                feature: "Idle CPU after first screenshot",
+                ours: "Baseline (framework not loaded in server)",
+                competitor: "~19% sustained (ReplayKit never unloads)",
               },
               {
-                feature: "Re-verifies coordinate after scrolling",
-                ours: "Re-walks AX tree after every tick",
-                competitor: "Does not scroll; no re-verification",
+                feature: "Can enforce a hard timeout",
+                ours: "Yes — Process.terminate() after 5.0s",
+                competitor: "No — in-process CGImage calls can't be cancelled",
               },
               {
-                feature: "Adaptive to pixel distance",
-                ours: "1 / 2 / 3 lines per step by threshold",
-                competitor: "N/A",
+                feature: "Crosshair drawing in the server",
+                ours: "No — drawn in the helper via CGContext",
+                competitor: "Yes — pulls AppKit drawing into the server",
               },
               {
-                feature: "Works on text-less AX groups",
-                ours: "Edge-probe fallback branch",
-                competitor: "N/A",
+                feature: "Swap for ScreenCaptureKit",
+                ours: "Rewrite 111 lines of helper, untouched server",
+                competitor: "Restructure the server's frame handling",
               },
               {
-                feature: "Per-window targeting (popovers, sheets)",
-                ours: "getWindowContainingPoint iterates AXWindows",
-                competitor: "Usually targets AXMainWindow only",
+                feature: "Failure surface",
+                ours: "Screenshot nil, AX diff still delivered",
+                competitor: "Screenshot thread can stall or leak",
               },
               {
-                feature: "Bounded latency",
-                ours: "30 steps × ~100ms cap",
-                competitor: "Instant but wrong",
+                feature: "Window selection by AX traversal overlap",
+                ours: "Yes — max intersection score with traversalWindowBounds",
+                competitor: "Usually largest-window heuristic",
               },
               {
-                feature: "Abortable with Esc mid-scroll",
-                ours: "Yes — InputGuard throwIfCancelled is engaged",
-                competitor: "No generic abort",
-              },
-              {
-                feature: "Safe-viewport margin",
-                ours: "15pt dy inset rejects header-clipped hits",
-                competitor: "N/A",
+                feature: "Lines needed in the server",
+                ours: "134 lines for captureWindowScreenshot + launch",
+                competitor: "Similar lines + indefinite CPU tax",
               },
             ]}
           />
@@ -947,81 +943,17 @@ export default function MacosUsePage() {
         {/* Proof banner */}
         <section className="max-w-4xl mx-auto px-6 py-10">
           <ProofBanner
-            quote="The loop that makes agents reliable on long scroll views is not a prompt rule or a retry heuristic in the client. It is 127 lines of Swift in one function, anchored by text, stepped by pixel distance, and capped at 30 iterations."
-            source="main.swift:1159-1285"
-            metric="scroll → re-read → click"
+            quote="The second binary is not a micro-service and not a sandbox. It is a lifetime boundary. ReplayKit lives inside it and nowhere else, which is the only reason the MCP server's idle CPU stays flat."
+            source="main.swift:382-385 + Sources/ScreenshotHelper"
+            metric="1 process exit = 1 framework unload"
           />
         </section>
 
-        {/* Terminal — reproduce */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Reproduce The Whole Thing In A Clean Checkout
-            </h2>
-            <p className="text-zinc-600 mb-8 max-w-2xl">
-              Every line number on this page is on disk. Clone the repo and
-              grep.
-            </p>
-
-            <TerminalOutput
-              title="Reading the scroll loop from source"
-              lines={[
-                {
-                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
-                  type: "command",
-                },
-                { text: "cd mcp-server-macos-use", type: "command" },
-                {
-                  text: "grep -n 'scrollIntoViewIfNeeded\\|findElementByText\\|findAXElementAtPoint\\|linesPerStep\\|maxSteps' Sources/MCPServer/main.swift",
-                  type: "command",
-                },
-                {
-                  text: "1057:func findAXElementAtPoint(root: AXUIElement, point: CGPoint, maxDepth: Int = 25)",
-                  type: "output",
-                },
-                {
-                  text: "1126:func findElementByText(root: AXUIElement, text: String, viewport: CGRect, maxDepth: Int = 25)",
-                  type: "output",
-                },
-                {
-                  text: "1159:func scrollIntoViewIfNeeded(pid: pid_t, point: CGPoint) async -> CGPoint",
-                  type: "output",
-                },
-                {
-                  text: "1187:    let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)",
-                  type: "output",
-                },
-                {
-                  text: "1189:    let maxSteps = 30",
-                  type: "output",
-                },
-                {
-                  text: "1588:                let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)",
-                  type: "output",
-                },
-                {
-                  text: "sed -n '1128p' Sources/MCPServer/main.swift",
-                  type: "command",
-                },
-                {
-                  text: '    let safeViewport = viewport.insetBy(dx: 0, dy: 15)',
-                  type: "output",
-                },
-                {
-                  text: "Every number and call site on the page is right there.",
-                  type: "success",
-                },
-              ]}
-            />
-          </div>
-        </section>
-
-        {/* Inline CTA */}
+        {/* InlineCta */}
         <section className="max-w-4xl mx-auto px-6 py-10">
           <InlineCta
-            heading="Point macos-use at any scroll-heavy app you use"
-            body="Chat threads, file lists, long settings panels: the scroll loop means an agent can target any row from a stale traversal and still land the click. Install the server, wire it into Claude Desktop or Cursor, and every click_and_traverse gets the scroll-to-reveal behaviour for free."
+            heading="Point macos-use at any scroll-heavy or dialog-heavy app"
+            body="The server gives you a bounded, reliable PNG plus an AX tree diff for every click, type, and press. The two-binary layout is invisible to your MCP client: it just sees a screenshot path in the response summary. Clone the repo, build with swift build, and wire it into Claude Desktop or Cursor the normal way."
             linkText="Install from npm"
             href="https://www.npmjs.com/package/mcp-server-macos-use"
           />
@@ -1033,23 +965,23 @@ export default function MacosUsePage() {
         {/* Final CTA */}
         <section className="max-w-4xl mx-auto px-6 py-16 text-center">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Read the scroll loop.
+            Read Package.swift.
           </h2>
           <p className="text-zinc-500 mb-8 max-w-xl mx-auto">
-            One Swift file.{" "}
-            <span className="font-mono text-sm">main.swift:1126-1285</span> is
-            the entire text-anchored, distance-stepped, 30-iteration
-            scroll-to-reveal.
+            Thirty-one lines. Two{" "}
+            <span className="font-mono text-sm">.executableTarget</span>{" "}
+            entries. The one on the bottom is the entire reason the CPU graph
+            is flat.
           </p>
-          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1126-L1285">
-            Open main.swift on GitHub
+          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Package.swift">
+            Open Package.swift on GitHub
           </ShimmerButton>
         </section>
 
         <StickyBottomCta
-          description="macos-use scrolls off-screen click targets into view by re-anchoring by text after every wheel-line step"
-          buttonLabel="Read the loop"
-          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1159-L1285"
+          description="macos-use ships two binaries because CGWindowListCreateImage loads ReplayKit into the caller and it never leaves"
+          buttonLabel="Read the helper"
+          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/ScreenshotHelper/main.swift"
         />
       </article>
     </>
