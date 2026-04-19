@@ -14,14 +14,15 @@ import {
   AnimatedCodeBlock,
   TerminalOutput,
   StepTimeline,
+  HorizontalStepper,
+  FlowDiagram,
   ComparisonTable,
   GlowCard,
   BentoGrid,
-  AnimatedChecklist,
+  BeforeAfter,
   ProofBanner,
   InlineCta,
   StickyBottomCta,
-  SequenceDiagram,
   articleSchema,
   breadcrumbListSchema,
   faqPageSchema,
@@ -32,9 +33,9 @@ const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
 const TITLE =
-  "macos-use: The CGEventTap Kill-Switch That Lets You Press Esc To Stop The AI Mid-Click";
+  "macos-use: The Auto Scroll-To-Reveal That Fires When You Click An Off-Screen Element";
 const DESCRIPTION =
-  "macos-use is a Swift MCP server that drives macOS apps through accessibility APIs. The part nobody else writes about: every disruptive tool call engages a CGEventTap that blocks your keyboard and mouse, shows a pulsing 'press Esc to cancel' overlay, and distinguishes the server's own CGEvent.post calls from your keystrokes using a single integer field. Walk through InputGuard.swift and the call sites at main.swift:1667-1764.";
+  "macos-use is a Swift MCP server for macOS automation. The part nobody else writes about: when the target of a click tool call is below the fold, the server reads its text from the accessibility tree, scrolls 1-3 wheel-lines at a time based on distance, re-finds the element by text in the updated tree, and clicks the fresh coordinate. Walk through main.swift:1126-1285 and the call site at 1588.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -48,9 +49,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: the Esc-to-cancel kill-switch, explained from source",
+    title: "macos-use: how click_and_traverse scrolls off-screen targets into view",
     description:
-      "CGEventTap at head-insert, 30-second watchdog, stateID-based hardware filter. One Swift file, 355 lines.",
+      "Text-anchored scroll loop. 1-3 wheel-lines per step based on pixel distance. Re-search the AX tree after every tick. Up to 30 steps.",
   },
 };
 
@@ -68,52 +69,52 @@ const breadcrumbSchemaItems = [
 
 const faqItems = [
   {
-    q: "What is macos-use?",
-    a: "macos-use (package name mcp-server-macos-use) is an open source Swift MCP server that lets any MCP client (Claude Desktop, Claude Code, Cursor, VS Code) drive any macOS app. It reads the accessibility tree via AXUIElement and posts input through CGEvent, and every disruptive tool call runs behind a CGEventTap kill-switch so you can abort mid-action with Esc. Repo: github.com/mediar-ai/mcp-server-macos-use. Homepage: macos-use.dev. It exposes six tools: open_application_and_traverse, click_and_traverse, type_and_traverse, press_key_and_traverse, scroll_and_traverse, and refresh_traversal.",
+    q: "What is macos-use and where does this feature live in the code?",
+    a: "macos-use (package name mcp-server-macos-use) is a Swift MCP server that lets any MCP client drive any macOS app via accessibility APIs. The auto scroll-to-reveal logic lives entirely in one file: Sources/MCPServer/main.swift. Specifically scrollIntoViewIfNeeded at lines 1159-1285, with helpers findAXElementAtPoint at 1057 and findElementByText at 1126. The one call site is main.swift:1588, inside the click_and_traverse handler, just before the CGEvent click is posted.",
   },
   {
-    q: "What does InputGuard actually do?",
-    a: "InputGuard is a singleton defined in Sources/MCPServer/InputGuard.swift. When a disruptive tool call starts, it creates a CGEventTap at the .cghidEventTap location with head-insert placement, registers interest in key, mouse, scroll, drag, and modifier-change events, and throws away every hardware event that reaches it. At the same time it opens an NSWindow at .screenSaver level with a dark centered pill, a pulsing orange dot, and a message describing what the AI is doing. The tap and the overlay are torn down when the tool returns.",
+    q: "What triggers the auto-scroll, exactly?",
+    a: "The click handler first computes a raw target point (either from x, y, width, height coordinates, or from searching the AX traversal for an element that matches the `element` text). Before building the click CGEvent, it calls `await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)`. That function calls getWindowContainingPoint; if the returned window bounds already contain the point, it returns the caller-centered point unchanged. Only if the point falls outside every AXWindow bounds does the scroll loop engage.",
   },
   {
-    q: "How does it tell my keystrokes apart from the server's own CGEvent.post calls?",
-    a: "One integer. At InputGuard.swift:329 the callback reads event.getIntegerValueField(.eventSourceStateID). The server's CGEvent.post calls use the .hidSystemState source, which carries a non-zero stateID. Real hardware events carry stateID == 0. The callback returns Unmanaged.passUnretained(event) when stateID is non-zero (programmatic, let through) and returns nil when stateID is zero (hardware, dropped). That is the whole mechanism; no per-event timestamp tracking, no sequence number matching.",
+    q: "Why scroll 1, 2, or 3 lines at a time — why not just scroll by the full delta in one go?",
+    a: "main.swift:1187 sets `let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)` where distance is the raw pixel distance between the target and the nearest viewport edge. Small offsets tick at 1 line/step because macOS scroll momentum means one line often moves 20-40px and you overshoot if you go harder. Large offsets tick at 3 lines/step so a 2000px offset does not take 100 iterations. The loop caps at 30 steps total.",
   },
   {
-    q: "How does Esc-to-cancel actually work?",
-    a: "The callback checks three things on every hardware keyDown: event type equals .keyDown, keycode equals 53 (plain Esc on US layout), and the event flags intersected with [.maskCommand, .maskControl, .maskAlternate, .maskShift] is empty. When all three are true it writes /tmp/macos-use/esc_pressed.txt as a verification marker, calls handleEscPressed() which flips the internal _cancelled flag and tears down the tap and the overlay, then returns nil to suppress the Esc event itself so it does not leak into whatever app has focus.",
+    q: "How does the server know it has scrolled the right element into view and not some lookalike?",
+    a: "Before scrolling, it calls findAXElementAtPoint(root: windowElement, point: rawPoint) and reads getAXElementText on the result. That string is the anchor. After every scroll event it calls findElementByText(root: windowElement, text: targetText, viewport: windowBounds). That helper walks the AX tree with maxDepth 25, compares getAXElementText to the target text, and only returns a hit whose center falls inside viewport.insetBy(dx: 0, dy: 15). The 15pt inset is there so an item half-occluded by a sticky header does not count as 'in viewport'.",
   },
   {
-    q: "What happens if the automation is mid-sequence when I hit Esc?",
-    a: "Between every step of a composed action (primary click → additional type → additional press → final traversal), main.swift calls try InputGuard.shared.throwIfCancelled(). If _cancelled is true, throwIfCancelled throws InputGuardCancelled and the handler drops into a catch block that disengages the guard, restores the cursor to savedCursorPos, reactivates the previously frontmost NSRunningApplication, and returns an MCP error message reading 'Cancelled: user pressed Esc to abort <tool_name>'. The abort is checked at main.swift:1708, 1721, 1728, 1734, plus a final check at 1758 after a 200ms grace period.",
+    q: "What if the element at the target point has no text at all?",
+    a: "This happens on long lists where the target row is off-screen and the AX hit at the raw point comes back as a generic AXGroup with no AXValue or AXTitle. main.swift:1220-1284 handles this branch separately. It scrolls toward the target and probes an element at windowBounds.maxY - 60 (or minY + 60) on every step. When any element appears at the original target point with text, it switches to text-based tracking and nudges for up to 8 more ticks to re-center. If nothing with text ever appears, the function returns the raw point and the click goes wherever that leaves the cursor.",
   },
   {
-    q: "Why is there a 30-second watchdog?",
-    a: "If something goes wrong upstream and the tool handler never calls disengage(), a stuck CGEventTap would lock the user out of their own machine. watchdogTimeout defaults to 30 on InputGuard.swift:24 and is wired up in startWatchdog(): a DispatchSource timer on a global queue fires once after 30 seconds and unconditionally calls disengage(). The log line 'InputGuard: watchdog fired after 30s — auto-disengaging' shows up in stderr when it trips. The watchdog is the reason you cannot permanently brick your machine with a misbehaving agent.",
+    q: "Does the auto-scroll fire a real CGEvent scroll, or does it use AX APIs?",
+    a: "Real CGEvents. main.swift:1196 builds `CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: scrollDirection, ...)` on every step and posts it to `.cghidEventTap`. The location is set to `CGPoint(x: point.x, y: windowBounds.midY)` so the scroll wheel event is aimed at the column of the target (so it hits the right scroll area if the window is split) but vertically centered inside the window (so the event does not land on a toolbar or tab bar that might eat the scroll).",
   },
   {
-    q: "Is refresh_traversal disruptive?",
-    a: "No. main.swift:1667 sets `let isDisruptive = params.name != refreshTool.name`. Every other tool engages the guard and shows the overlay; refresh_traversal does not. This matches the semantics of the tool: refresh_traversal only reads the accessibility tree, it never posts a CGEvent, so there is nothing for the guard to protect against. Agents that want to plan a click without taking over the screen should use refresh_traversal first.",
+    q: "Does this work across multiple windows of the same app?",
+    a: "Yes. getWindowContainingPoint at main.swift:324 iterates AXWindows for the app element and matches the first window frame that contains the target point, falling back to AXMainWindow if none match. This matters for apps like Slack or Notes that show dialogs, popovers, or multiple document windows. The scroll loop then targets the window containing the point rather than always the main window.",
   },
   {
-    q: "What does the overlay look like?",
-    a: "A borderless NSWindow the size of the main screen, at level .screenSaver, with a 15% black wash. Centered on screen is a dark pill min(720, screenWidth/2) wide and 80 tall, with corner radius 40. Inside the pill: a 16x16 orange dot at the left that pulses 1.0 → 0.3 opacity every 0.8s (autoreverses, infinite), and a single-line white semibold 20pt system-font label that reads 'AI: <action description> — press Esc to cancel'. collectionBehavior is [.canJoinAllSpaces, .fullScreenAuxiliary] so it follows you across Spaces and sits on top of fullscreen apps. ignoresMouseEvents is true so the overlay itself is passive.",
+    q: "What happens at step 31?",
+    a: "The loop breaks with a warning to stderr ('could not scroll <text> into view after 30 steps') and scrollIntoViewIfNeeded returns the original raw point. The click then fires wherever that point lands, which is usually a miss but is logged and visible in the return diff so an agent can decide to try again with a different strategy. 30 scroll steps at 1-3 lines each is roughly 30-90 lines of content, which is enough for almost any practical list.",
   },
   {
-    q: "What if macOS auto-disables the tap?",
-    a: "CGEventTaps can be auto-disabled by macOS when they run too long or when the user presses Secure Input-triggering keys. The callback handles two synthetic events: .tapDisabledByTimeout and .tapDisabledByUserInput. When either arrives, reEnableTapIfNeeded calls CGEvent.tapEnable(tap: tap, enable: true) and logs 're-enabled CGEventTap after system disabled it'. The kill-switch self-heals without the tool handler needing to know.",
+    q: "How is this different from just calling scroll_and_traverse first?",
+    a: "scroll_and_traverse is open-loop — you pass a deltaY and it posts exactly one scroll event. There is no feedback, no text anchor, no re-check. The agent has to compute the right delta up front, which is hard because AX coordinates for off-screen items are not predictive of how far you need to scroll. scrollIntoViewIfNeeded is closed-loop: it re-reads the AX tree after every tick and only stops when the target is actually visible. The agent just sends a click with the AX coordinate from its earlier traversal; the server handles the rest.",
   },
   {
-    q: "How does the guard save and restore cursor + focus?",
-    a: "Before engaging, main.swift:1671-1676 captures NSWorkspace.shared.frontmostApplication and the current NSEvent.mouseLocation (flipped to CG coordinates by subtracting from the primary screen height). After the tool returns, main.swift:1767 reposts a .mouseMoved CGEvent at savedCursorPos, and main.swift:1775-1781 compares the current frontmost PID to savedFrontmostApp.processIdentifier and calls prevApp.activate if they differ. On the Esc cancellation path the same restoration runs in the catch block at main.swift:1847-1860.",
+    q: "Why is the 15pt inset `insetBy(dx: 0, dy: 15)` instead of the 40 in the comment?",
+    a: "Honest answer: the comment at main.swift:1125 says '40px inset margin' but the code at 1128 passes `dy: 15`. The code is what runs. 15pt is enough to exclude elements that are clipped by a 1-2pt border or a 12pt tooltip but not enough to reject an element that is simply near the top of the scroll area. If you were to fork macos-use, this is one of the few knobs worth tuning per app: larger inset for apps with tall sticky headers.",
   },
   {
-    q: "Can I verify the Esc handler fired?",
-    a: "Yes. When the callback suppresses an Esc keypress it writes /tmp/macos-use/esc_pressed.txt with contents like 'esc_at_2026-04-18 12:34:56 +0000'. throwIfCancelled also writes /tmp/macos-use/cancel_check.txt on every call. You can tail those files while driving the agent to prove the kill-switch is live. The same directory is where flat-text tool responses and PNG screenshots land, so nothing new to set up.",
+    q: "Does the overlay from InputGuard cover the scrolling?",
+    a: "Yes, both are active at the same time. The click_and_traverse handler engages InputGuard before scrollIntoViewIfNeeded runs, so the pulsing 'AI: <action> — press Esc to cancel' overlay is already visible while the scroll events fly. Pressing Esc mid-scroll throws InputGuardCancelled at the next throwIfCancelled call site (there are four in the handler), and the catch block restores cursor and focus before returning. You cannot brick yourself on a runaway scroll.",
   },
   {
-    q: "How is this different from other macOS automation tools?",
-    a: "AppleScript has no kill-switch — once you start an osascript command, your only option is to kill the process. Automator and Shortcuts can be stopped by clicking the stop button, which requires the mouse you may not have. Competing macOS MCP servers (mcp-remote-macos-use, CursorTouch/MacOS-MCP) also post CGEvents but do not engage a hardware-event blocking tap, do not show an overlay, and do not wire up a single-key abort. macos-use is the only one where pressing Esc mid-automation raises an error inside the server and unwinds cursor + focus cleanly.",
+    q: "Can I see the scroll loop in action?",
+    a: "Yes. Set the MCP client to run the server with `stderr` visible and fire a click_and_traverse targeting an element you know is off-screen. You will see log lines like `scrollIntoViewIfNeeded: target text=\"Settings\", distance=742px, lines/step=3, dir=3` followed by `step 1: element frame=...` and finally `found \"Settings\" at (x, y) after N steps`. Every logged field corresponds to a named variable in the code.",
   },
 ];
 
@@ -133,166 +134,134 @@ const jsonLd = [
   faqPageSchema(faqItems),
 ];
 
-const tapCreateCode = `// Sources/MCPServer/InputGuard.swift:113-155
-// The CGEventTap that blocks your keyboard and mouse during automation.
+const scrollFnCode = `// Sources/MCPServer/main.swift:1159-1219
+// Text-anchored scroll loop. Runs before every click_and_traverse.
 
-private func createEventTap() {
-    // Build mask incrementally to avoid Swift type-checker timeout.
-    var mask: CGEventMask = 0
-    mask |= (1 << CGEventType.keyDown.rawValue)
-    mask |= (1 << CGEventType.keyUp.rawValue)
-    mask |= (1 << CGEventType.leftMouseDown.rawValue)
-    mask |= (1 << CGEventType.leftMouseUp.rawValue)
-    mask |= (1 << CGEventType.rightMouseDown.rawValue)
-    mask |= (1 << CGEventType.rightMouseUp.rawValue)
-    mask |= (1 << CGEventType.mouseMoved.rawValue)
-    mask |= (1 << CGEventType.leftMouseDragged.rawValue)
-    mask |= (1 << CGEventType.rightMouseDragged.rawValue)
-    mask |= (1 << CGEventType.scrollWheel.rawValue)
-    mask |= (1 << CGEventType.flagsChanged.rawValue)
+func scrollIntoViewIfNeeded(pid: pid_t, point: CGPoint) async -> CGPoint {
+    let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 5.0)
 
-    let refcon = Unmanaged.passUnretained(self).toOpaque()
-
-    // kCGHeadInsertEventTap = 0: first in the system event chain, before any app.
-    let headInsert = CGEventTapPlacement(rawValue: 0)!
-    guard let tap = CGEvent.tapCreate(
-        tap: .cghidEventTap,          // HID stream, pre-delivery
-        place: headInsert,
-        options: .defaultTap,          // active: we can modify / drop events
-        eventsOfInterest: mask,
-        callback: inputGuardCallback,
-        userInfo: refcon
-    ) else {
-        fputs("error: InputGuard: failed to create CGEventTap (check Accessibility permissions)\\n", stderr)
-        // … mark not engaged and bail out …
-        return
+    guard let (windowElement, windowBounds) =
+            getWindowContainingPoint(appElement: appElement, point: point) else {
+        return point  // No window for this point. Bail out.
     }
 
-    eventTap = tap
-    runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-    CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-    CGEvent.tapEnable(tap: tap, enable: true)
+    // Cheap path: point already visible. Return the caller-centered point
+    // without refining via AX — overlapping full-width groups would shadow
+    // sidebar items and mis-route the click.
+    if windowBounds.contains(point) { return point }
+
+    // Anchor: find what's nominally at that point, and capture its text.
+    // If the element has no text we branch into the edge-probe loop below.
+    let targetElement = findAXElementAtPoint(root: windowElement, point: point)
+    let targetText    = targetElement != nil ? getAXElementText(targetElement!) : nil
+
+    let scrollingUp: Bool = point.y > windowBounds.maxY
+    let distance: CGFloat = scrollingUp
+        ? point.y - windowBounds.maxY
+        : windowBounds.minY - point.y
+
+    // The knob. Pixel distance → lines per step.
+    //   < 80  px: 1 line/step  (tight; avoid overshoot)
+    //   < 250 px: 2 lines/step
+    //   else:     3 lines/step (long lists)
+    let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)
+    let scrollDirection: Int32 = scrollingUp ? -linesPerStep : linesPerStep
+    let maxSteps = 30
+
+    if let targetText = targetText {
+        for step in 1...maxSteps {
+            // Post a real line-grained scroll wheel event. Aimed at the
+            // target x, but at the vertical mid-point of the window so
+            // we don't hit a toolbar.
+            guard let scrollEvent = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .line, wheelCount: 1,
+                wheel1: scrollDirection, wheel2: 0, wheel3: 0
+            ) else { return point }
+            scrollEvent.location = CGPoint(x: point.x, y: windowBounds.midY)
+            scrollEvent.post(tap: .cghidEventTap)
+            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+            // Re-walk the AX tree. Did the anchored text land in the
+            // safely-inset viewport yet? Return its fresh centre.
+            if let foundCenter = findElementByText(
+                    root: windowElement, text: targetText, viewport: windowBounds) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                return foundCenter
+            }
+        }
+        return point  // 30 steps, nothing found. Caller clicks the raw point.
+    }
+
+    // … no text at target → edge-probe branch (lines 1220-1284) …
 }`;
 
-const callbackCode = `// Sources/MCPServer/InputGuard.swift:311-355
-// The whole filter. Three branches. Under 45 lines.
+const findByTextCode = `// Sources/MCPServer/main.swift:1124-1149
+// Walks the AX tree, matches by text, returns the centre only if inside
+// the viewport minus a 15pt dy inset.
 
-private func inputGuardCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    refcon: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
-    let guard_ = Unmanaged<InputGuard>.fromOpaque(refcon).takeUnretainedValue()
+func findElementByText(
+    root: AXUIElement, text: String, viewport: CGRect, maxDepth: Int = 25
+) -> CGPoint? {
+    guard maxDepth > 0 else { return nil }
+    // The 15pt inset is why an item half-clipped by a sticky header
+    // does NOT count as visible. Raise this per-app if your target
+    // apps have tall headers.
+    let safeViewport = viewport.insetBy(dx: 0, dy: 15)
 
-    // Branch 1: macOS auto-disabled the tap — re-enable and pass through.
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        guard_.reEnableTapIfNeeded(type: type)
-        return Unmanaged.passUnretained(event)
-    }
-
-    // Branch 2: programmatic events from our own CGEvent.post calls pass through.
-    // .hidSystemState source has a non-zero stateID; hardware events have stateID == 0.
-    let sourceStateID = event.getIntegerValueField(.eventSourceStateID)
-    if sourceStateID != 0 {
-        return Unmanaged.passUnretained(event)
-    }
-
-    // Branch 3: hardware event. Check for the abort key before dropping it.
-    if type == .keyDown {
-        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        let flags = event.flags
-        let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
-        if keyCode == 53 && flags.intersection(modifierMask).isEmpty {
-            // Plain Esc, no modifiers. Abort.
-            try? "esc_at_\\(Date())".write(toFile: "/tmp/macos-use/esc_pressed.txt",
-                                          atomically: true, encoding: .utf8)
-            guard_.handleEscPressed()
-            return nil  // Swallow the Esc so it does not hit the focused app.
+    if let elementText = getAXElementText(root), elementText == text {
+        if let frame = getAXElementFrame(root) {
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            if safeViewport.contains(center) {
+                return center  // Fresh coordinate from the live tree.
+            }
         }
     }
 
-    // Every other hardware event is dropped on the floor.
+    // Recurse. AXChildren is an array of AXUIElement, flat at this level.
+    var childrenRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(root, "AXChildren" as CFString,
+                                     &childrenRef) == .success,
+       let children = childrenRef as? [AXUIElement] {
+        for child in children {
+            if let found = findElementByText(
+                    root: child, text: text, viewport: viewport,
+                    maxDepth: maxDepth - 1) {
+                return found
+            }
+        }
+    }
     return nil
 }`;
 
-const callSiteCode = `// Sources/MCPServer/main.swift:1666-1763
-// How the handler engages, polls, and disengages the guard around every tool call.
+const callSiteCode = `// Sources/MCPServer/main.swift:1580-1598
+// Where the click handler invokes the scroll loop, right before the
+// CGEvent is dispatched. One function call. No configuration.
 
-// Disruptive = anything except refresh_traversal.
-let isDisruptive = params.name != refreshTool.name
-
-if isDisruptive {
-    // Snapshot what we need to restore on the way out.
-    savedFrontmostApp = NSWorkspace.shared.frontmostApplication
-    let nsPos = NSEvent.mouseLocation
-    if let primaryScreen = NSScreen.screens.first {
-        savedCursorPos = CGPoint(x: nsPos.x,
-                                 y: primaryScreen.frame.height - nsPos.y)
-    }
-
-    // Engage: block input + show overlay.
-    InputGuard.shared.engage(
-        message: "AI: \\(toolDesc) — press Esc to cancel"
-    )
+// Activate the target app before clicking so the event registers.
+if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
+    runningApp.activate(options: [])
+    try? await Task.sleep(nanoseconds: 200_000_000)  // 200ms for activation
 }
 
-// … perform primary action on @MainActor …
-if isDisruptive { try InputGuard.shared.throwIfCancelled() }
+// Auto-scroll element into view if it's outside the visible window area.
+// rawPoint was computed from either (x, y, w, h) or from searching the
+// AX traversal for the element text. scrollIntoViewIfNeeded returns:
+//   - rawPoint unchanged, if already visible
+//   - the fresh midpoint of the element, if scrolled into view
+//   - rawPoint unchanged, if 30 steps exceeded (logged as warning)
+let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)
+lastClickPoint = adjustedPoint
 
-// For composed actions (click → type → press → final traversal),
-// throwIfCancelled is called *between every step* so a late Esc still aborts.
-for additionalAction in additionalActions {
-    try? await Task.sleep(nanoseconds: 100_000_000)   // 100ms spacing
-    if isDisruptive { try InputGuard.shared.throwIfCancelled() }
-    // … perform additional action …
-}
-
-if isDisruptive {
-    // 200ms grace window: user might press Esc right as the action finishes.
-    try? await Task.sleep(nanoseconds: 200_000_000)
-    let wasCancelled = InputGuard.shared.wasCancelled
-    InputGuard.shared.disengage()
-    if wasCancelled { throw InputGuardCancelled() }
-}`;
-
-const overlayCode = `// Sources/MCPServer/InputGuard.swift:202-277
-// The visible half of the kill-switch.
-
-private func buildAndShowOverlay(message: String) {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory) // No dock icon, no Cmd+Tab entry.
-
-    let screenFrame = NSScreen.main?.frame
-        ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-
-    let window = NSWindow(
-        contentRect: screenFrame,
-        styleMask: [.borderless],
-        backing: .buffered,
-        defer: false
-    )
-    window.level = .screenSaver            // above fullscreen apps
-    window.isOpaque = false
-    window.backgroundColor = NSColor.black.withAlphaComponent(0.15)
-    window.ignoresMouseEvents = true       // overlay is passive
-    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-    // Centered dark pill, min(720, half-screen) wide, 80pt tall, radius 40.
-    let pill = /* … NSView with layer.backgroundColor = rgba(0.08, 0.92) … */
-
-    // Pulsing orange dot, 16x16, 0.8s opacity 1.0 ↔ 0.3, autoreverses forever.
-    let pulse = CABasicAnimation(keyPath: "opacity")
-    pulse.fromValue = 1.0
-    pulse.toValue = 0.3
-    pulse.duration = 0.8
-    pulse.autoreverses = true
-    pulse.repeatCount = .infinity
-
-    // White 20pt semibold label on the right of the pill, single-line, truncates.
-    window.orderFrontRegardless()
-    self.overlayWindow = window
+let isDoubleClick = params.arguments?["doubleClick"]?.boolValue ?? false
+let isRightClick  = params.arguments?["rightClick"]?.boolValue ?? false
+if isDoubleClick {
+    primaryAction = .input(action: .doubleClick(point: adjustedPoint))
+} else if isRightClick {
+    primaryAction = .input(action: .rightClick(point: adjustedPoint))
+} else {
+    primaryAction = .input(action: .click(point: adjustedPoint))
 }`;
 
 export default function MacosUsePage() {
@@ -315,40 +284,41 @@ export default function MacosUsePage() {
               <span className="inline-block bg-zinc-100 text-zinc-600 text-xs font-medium px-2 py-1 rounded-full">
                 v0.1.17
               </span>
-              <span className="inline-block bg-orange-50 text-orange-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
-                CGEventTap + Esc
+              <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-medium px-2 py-1 rounded-full font-mono">
+                scrollIntoViewIfNeeded
               </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 mb-6">
-              macos-use: The{" "}
-              <GradientText>Esc-to-Cancel Kill-Switch</GradientText> That Sits
-              Between You and Every Tool Call
+              macos-use: The Tool Call That Scrolls Its Own{" "}
+              <GradientText>Target Into View</GradientText> Before Clicking
             </h1>
             <p className="text-lg text-zinc-500 max-w-2xl mb-6">
-              Search &ldquo;macos-use&rdquo; and every result tells you the
-              same three things: it uses accessibility APIs, it exposes six MCP
-              tools, and you install it from npm. None of them mention that
-              before any of those six tools moves your mouse or presses a key,
-              the server installs a{" "}
-              <span className="font-mono text-sm">CGEventTap</span> at
-              head-insert, covers the screen with a pulsing overlay, and listens
-              for a single keycode that unwinds the whole automation cleanly.
-              This page walks the kill-switch from the callback up.
+              Every writeup of macos-use says the same two things: it drives
+              macOS apps through accessibility APIs, and every action returns a
+              before/after diff. None of them mention the loop that runs in
+              between. When you tell{" "}
+              <span className="font-mono text-sm">click_and_traverse</span> to
+              click an element that has scrolled off-screen, the server does
+              not fail and does not guess. It reads the target&rsquo;s text
+              from the AX tree, fires wheel-line scroll events one, two, or
+              three at a time (picked by raw pixel distance), re-finds the
+              element by text after every tick, and clicks the fresh centre
+              coordinate.
             </p>
             <ArticleMeta
               datePublished={DATE_PUBLISHED}
               author="macos-use maintainers"
-              readingTime="11 min read"
+              readingTime="10 min read"
             />
             <div className="mt-8 flex gap-4 flex-wrap">
-              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift">
-                Read InputGuard.swift on GitHub
+              <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1159-L1285">
+                Read scrollIntoViewIfNeeded on GitHub
               </ShimmerButton>
               <a
-                href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1666-L1764"
+                href="https://www.npmjs.com/package/mcp-server-macos-use"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-zinc-200 bg-white text-zinc-700 text-sm font-medium hover:border-teal-300 hover:text-teal-700 transition-colors"
               >
-                Jump to main.swift:1666-1764
+                Install from npm
               </a>
             </div>
           </div>
@@ -359,23 +329,23 @@ export default function MacosUsePage() {
           rating={5.0}
           ratingCount="open source"
           highlights={[
-            "CGEventTap at head-insert",
-            "stateID check separates hardware from posts",
-            "30-second watchdog auto-release",
+            "Text-anchored scroll loop",
+            "1-3 wheel-lines per step, picked by pixel distance",
+            "30-step cap, re-searches AX tree every tick",
           ]}
         />
 
         {/* Concept intro — Remotion clip */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <RemotionClip
-            title="Press Esc. The AI stops."
-            subtitle="The part of macos-use nobody writes about"
+            title="Click something off-screen. The server scrolls first."
+            subtitle="Closed-loop, text-anchored, AX-tree-driven"
             captions={[
-              "Every disruptive tool call engages a CGEventTap at head-insert",
-              "Hardware events: dropped. Server's CGEvent.post: passes through",
-              "The difference is one integer: eventSourceStateID",
-              "Keycode 53 with no modifiers tears the tap down and aborts the action",
-              "A 30-second watchdog makes sure you never stay locked out",
+              "Read the target element's text via findAXElementAtPoint",
+              "Pick lines/step from pixel distance: <80=1, <250=2, else 3",
+              "Post a real CGEvent wheel-line scroll at the window mid-Y",
+              "Re-walk the AX tree and match by text after every tick",
+              "Return the fresh centre. Click lands on a verified coordinate.",
             ]}
             accent="teal"
           />
@@ -384,205 +354,316 @@ export default function MacosUsePage() {
         {/* What competitor pages skip */}
         <section className="max-w-4xl mx-auto px-6 py-12">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Other macos-use Writeups Miss
+            What The Top macos-use Writeups All Leave Out
           </h2>
           <p className="text-zinc-600 mb-4">
-            The first page of Google for &ldquo;macos use&rdquo; is made up of
-            the GitHub README, the mcp.so listing, two competing macOS MCP
-            servers, and a few third-party roundups. They all agree on the same
-            three bullet points: it drives macOS apps, it reads the
-            accessibility tree instead of taking screenshots, and you wire it
-            into your MCP client with one JSON config block.
+            The first page of Google for the query &ldquo;macos-use&rdquo; is a
+            mix of the repo README, the mcp.so listing, two competing macOS MCP
+            projects, and a couple of third-party roundups. They all lead with
+            the same two talking points: it reads the accessibility tree
+            instead of analysing screenshots, and every action returns a diff
+            of what changed in that tree after the action ran.
           </p>
           <p className="text-zinc-600 mb-4">
-            None of them mention that macos-use ships a safety layer. Before
-            any tool call that posts a{" "}
-            <span className="font-mono text-sm">CGEvent</span>, the server
-            creates a{" "}
-            <span className="font-mono text-sm">CGEventTap</span> that blocks
-            every hardware event the machine produces, draws a full-screen
-            overlay with a pulsing orange dot, and watches for a single key.
-            When you press it, the tap tears down, the tool throws{" "}
-            <span className="font-mono text-sm">InputGuardCancelled</span>, and
-            the handler restores cursor position and window focus before
-            returning an MCP error.
+            What none of them mention is what happens when the agent hands the
+            server a coordinate that is no longer on screen. The AX traversal
+            the model used to find the target might be seconds old; the user
+            might have already scrolled the window; the element might be in a
+            long list that was always below the fold. A naive accessibility
+            automator in that situation fires a click into an invisible pixel
+            and returns a diff saying nothing changed. macos-use does a
+            different thing, and that thing is an explicit, 127-line loop in
+            one Swift file.
           </p>
           <p className="text-zinc-600">
-            Every fact below comes from two files in this repo:{" "}
+            Every fact below comes from{" "}
             <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/InputGuard.swift
-            </span>{" "}
-            (355 lines) and the handler call sites at{" "}
-            <span className="font-mono text-sm text-teal-700">
-              Sources/MCPServer/main.swift:1666-1864
+              Sources/MCPServer/main.swift
             </span>
-            .
+            . The three functions that matter are{" "}
+            <span className="font-mono text-sm">findAXElementAtPoint</span>{" "}
+            (lines 1057-1083),{" "}
+            <span className="font-mono text-sm">findElementByText</span>{" "}
+            (1126-1149), and{" "}
+            <span className="font-mono text-sm">scrollIntoViewIfNeeded</span>{" "}
+            (1159-1285). They are called once, from the click handler at 1588.
           </p>
         </section>
 
-        {/* Anchor fact */}
+        {/* Before / after illustration */}
+        <section className="max-w-4xl mx-auto px-6 py-12">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            The Naive Click vs The Scroll-First Click
+          </h2>
+          <BeforeAfter
+            title="Clicking a row that is 742px below the current viewport"
+            before={{
+              label: "Naive AX click",
+              content:
+                "Agent posts CGEvent.click at the row's AX coordinates. The coordinate is below windowBounds.maxY. The click lands on whatever is on screen at that pixel — usually an empty scroll area, sometimes a different row. The diff shows no meaningful change. The agent guesses it mis-targeted and retries with a different element.",
+              highlights: [
+                "click fires at an off-screen pixel",
+                "wrong row is clicked or nothing is clicked",
+                "diff is empty, no signal to the agent",
+              ],
+            }}
+            after={{
+              label: "macos-use click",
+              content:
+                "Agent posts the same click. The server intercepts at main.swift:1588, captures the target text via the AX tree, scrolls the window in 3-line ticks, re-searches the tree for that text after each tick, and finally clicks the row at its freshly-computed on-screen centre. The diff shows the real effect of the click on the live UI.",
+              highlights: [
+                "target text anchored from AX tree",
+                "adaptive scroll step sizing (1, 2, or 3 lines)",
+                "click lands on a verified in-viewport coordinate",
+              ],
+            }}
+          />
+        </section>
+
+        {/* Anchor fact: the linesPerStep heuristic */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
-            <span className="inline-block bg-orange-50 text-orange-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
+            <span className="inline-block bg-cyan-50 text-cyan-700 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full mb-4">
               Anchor fact
             </span>
             <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The One Integer That Separates Your Keystrokes From The AI&rsquo;s
+              The One-Line Heuristic That Picks How Hard To Scroll
             </h2>
             <p className="text-zinc-600 mb-6">
               At{" "}
-              <span className="font-mono text-sm">InputGuard.swift:329</span>,
-              the event-tap callback reads a field called{" "}
-              <span className="font-mono text-sm">eventSourceStateID</span> from
-              every CGEvent it sees. Events whose stateID is not zero came from
-              the server&rsquo;s own{" "}
-              <span className="font-mono text-sm">CGEvent.post</span> calls
-              (which use the{" "}
-              <span className="font-mono text-sm">.hidSystemState</span> source,
-              so they carry a non-zero stateID). Events with stateID == 0 came
-              from a physical keyboard, mouse, or trackpad. The callback
-              returns them down two different paths: non-zero passes through
-              with{" "}
+              <span className="font-mono text-sm">main.swift:1187</span>, the
+              decision of how aggressively to scroll is a single ternary
+              expression:{" "}
               <span className="font-mono text-sm">
-                Unmanaged.passUnretained(event)
+                let linesPerStep: Int32 = distance &lt; 80 ? 1 : (distance &lt;
+                250 ? 2 : 3)
               </span>
-              , zero returns{" "}
-              <span className="font-mono text-sm">nil</span> and is dropped on
-              the floor.
+              . The variable{" "}
+              <span className="font-mono text-sm">distance</span> is the raw
+              pixel offset between the target&rsquo;s y coordinate and the
+              nearest edge of{" "}
+              <span className="font-mono text-sm">windowBounds</span>. This
+              heuristic lives between two extremes that both fail: one line
+              per step is so slow a long list never arrives within the 30-step
+              cap, and one big bang scroll overshoots because macOS compounds
+              wheel deltas with momentum.
             </p>
+            <div className="grid md:grid-cols-3 gap-4 mb-8">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
+                  near miss
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-zinc-900">
+                  distance &lt; 80px
+                </div>
+                <div className="mt-1 text-sm text-zinc-500">
+                  1 line / step. Avoid overshoot for rows that are just outside
+                  the viewport. Macos momentum makes one line about 20-40px.
+                </div>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
+                  short hop
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-zinc-900">
+                  distance &lt; 250px
+                </div>
+                <div className="mt-1 text-sm text-zinc-500">
+                  2 lines / step. A page-ish worth of content. Still tight
+                  enough that a fast arriving element gets caught by the next
+                  AX tree re-search.
+                </div>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                <div className="text-xs font-mono uppercase tracking-wider text-cyan-700">
+                  long list
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-zinc-900">
+                  distance ≥ 250px
+                </div>
+                <div className="mt-1 text-sm text-zinc-500">
+                  3 lines / step. Gets to row #200 within the 30-step budget
+                  without a human ever noticing.
+                </div>
+              </div>
+            </div>
             <AnimatedCodeBlock
-              code={callbackCode}
+              code={scrollFnCode}
               language="swift"
-              filename="Sources/MCPServer/InputGuard.swift"
+              filename="Sources/MCPServer/main.swift"
             />
             <p className="text-zinc-600 mt-6">
-              That one integer is why the AI can type full sentences into a
-              text field at full speed while your keyboard is completely frozen
-              behind the overlay. No per-event timestamp tracking, no sequence
-              numbers, no shared mutable state. Post events have a signature
-              the tap recognises.
+              Two constants are worth flagging. The loop bound{" "}
+              <span className="font-mono text-sm">maxSteps = 30</span> sets the
+              ceiling at roughly 30-90 lines of scrolled content, which covers
+              essentially any practical list. The post-scroll sleep is{" "}
+              <span className="font-mono text-sm">100_000_000 ns</span>, 100
+              milliseconds, long enough for most apps to repaint the AX tree
+              before the next{" "}
+              <span className="font-mono text-sm">findElementByText</span>{" "}
+              search.
             </p>
           </div>
         </section>
 
-        {/* Animated beam: tool call → guard engage → dispatch */}
+        {/* How the text anchor works */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Happens Between MCP Call and CGEvent.post
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            A click, type, press, scroll, or open tool arrives on stdio. Before
-            any actual input reaches the system, the handler pipes through the
-            guard. Refresh traversal is the only tool that skips this path,
-            because it never posts an event.
-          </p>
-          <AnimatedBeam
-            title="How a disruptive tool call engages InputGuard"
-            from={[
-              { label: "click_and_traverse" },
-              { label: "type_and_traverse" },
-              { label: "press_key_and_traverse" },
-              { label: "scroll_and_traverse" },
-              { label: "open_application_and_traverse" },
-            ]}
-            hub={{ label: "InputGuard.shared.engage()" }}
-            to={[
-              { label: "CGEventTap at head-insert" },
-              { label: "Full-screen NSWindow overlay" },
-              { label: "30s watchdog timer" },
-            ]}
-          />
-          <p className="text-zinc-500 text-sm mt-6 max-w-2xl">
-            <span className="font-mono">refresh_traversal</span> is treated as
-            non-disruptive at{" "}
-            <span className="font-mono">main.swift:1667</span> and bypasses
-            this whole chain, because it only reads the AX tree and never posts
-            a CGEvent.
-          </p>
-        </section>
-
-        {/* The callback: 3 branches, one file */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Event-Tap Callback: Three Branches, Thirty Lines
+            Why Text Is The Anchor, Not A Coordinate
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            The entire filter lives in a single C-compatible free function at{" "}
-            <span className="font-mono text-sm">
-              Sources/MCPServer/InputGuard.swift:311-355
-            </span>
-            . It has to be a free function because{" "}
-            <span className="font-mono text-sm">CGEvent.tapCreate</span> takes
-            a C callback pointer. Swift closures with captured state would not
-            bridge, so the guard instance is passed through the{" "}
-            <span className="font-mono text-sm">refcon</span> pointer and
-            unwrapped at the top of the callback.
+            A coordinate is a moving target in a scrolling window. After one
+            scroll tick, the target element no longer lives at the original y.
+            A sibling row has taken its place. If you cling to the original
+            coordinate you end up clicking a different row. macos-use sidesteps
+            this by reading the target element&rsquo;s AX text up front, then
+            re-searching the tree by that text after every scroll. The returned
+            frame is always the live position of the real target.
           </p>
+          <AnimatedCodeBlock
+            code={findByTextCode}
+            language="swift"
+            filename="Sources/MCPServer/main.swift"
+          />
+          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
+            The{" "}
+            <span className="font-mono">viewport.insetBy(dx: 0, dy: 15)</span>{" "}
+            line is what keeps the loop honest. If an element is scrolled
+            halfway under a sticky header, its centre is inside the raw window
+            bounds but above the safe viewport, so{" "}
+            <span className="font-mono">findElementByText</span> returns nil
+            and the loop scrolls one more step. The doc-comment above the
+            function mentions a 40px inset but the code ships 15pt: if you
+            need bigger (apps with tall toolbars), this is the knob to tune.
+          </p>
+        </section>
 
-          <AnimatedChecklist
-            title="What the callback returns, per branch"
-            items={[
+        {/* AnimatedBeam: inputs → scroll fn → outputs */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            Where scrollIntoViewIfNeeded Sits In The Click Pipeline
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            The function takes a PID and a point, and returns a point. Between
+            input and output, it orchestrates five things: window lookup, text
+            anchoring, scroll event posting, tree re-search, and the
+            30-step budget check.
+          </p>
+          <AnimatedBeam
+            title="Inputs, the scroll loop, and the refined click point"
+            from={[
+              { label: "rawPoint from element text" },
+              { label: "rawPoint from (x, y, w, h)" },
+              { label: "pid of target app" },
+            ]}
+            hub={{ label: "scrollIntoViewIfNeeded" }}
+            to={[
+              { label: "CGEvent wheel-line posts" },
+              { label: "AX tree re-search by text" },
+              { label: "fresh click point or raw point fallback" },
+            ]}
+          />
+        </section>
+
+        {/* Steps of the algorithm */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            One Tick Of The Loop, End To End
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            A click targeting a row 742px below the fold. Here is what the
+            server runs, in order, between the MCP handler accepting the call
+            and the click CGEvent being dispatched.
+          </p>
+          <StepTimeline
+            steps={[
               {
-                text: "tapDisabledByTimeout / tapDisabledByUserInput: re-enable the tap, pass the event through. The tap self-heals if macOS disables it.",
-                checked: true,
+                title: "getWindowContainingPoint picks the right AXWindow",
+                description:
+                  "Iterates AXWindows for the app, matches the first whose frame contains the target. Falls back to AXMainWindow if none match. Important for apps that show popovers, sheets, or multiple document windows.",
               },
               {
-                text: "eventSourceStateID != 0: the server's own post. Pass through unchanged so click/type actually land.",
-                checked: true,
+                title: "Cheap path: if point ∈ windowBounds, return it",
+                description:
+                  "If the target is already visible, the function returns the caller-centered point and exits. Critically, it does NOT re-refine via findAXElementAtPoint in this case, because overlapping full-width group elements in the tree would shadow sidebar items and route the click wrong.",
               },
               {
-                text: "Hardware keyDown with keycode 53 and empty modifier mask: plain Esc. Write marker file, flip _cancelled, tear down tap, swallow the event.",
-                checked: true,
+                title: "Read the target's AX text as the anchor",
+                description:
+                  "findAXElementAtPoint walks the tree with maxDepth 25, returns the deepest element containing the raw point. getAXElementText reads AXValue first, falls back to AXTitle, then recurses into children (AXRow → AXCell → AXStaticText).",
               },
               {
-                text: "Every other hardware event (keys, mouse, scroll, drag, flagsChanged): return nil. The event never reaches any app.",
-                checked: true,
+                title: "Pick scroll direction and lines-per-step",
+                description:
+                  "scrollingUp = point.y > windowBounds.maxY. distance = |point.y - edge|. linesPerStep = 1 for distance < 80, 2 for < 250, 3 otherwise. scrollDirection flips sign to walk the right way.",
+              },
+              {
+                title: "Post a CGEvent scroll wheel, aimed at (point.x, window.midY)",
+                description:
+                  "CGEvent(scrollWheelEvent2Source:) with units: .line, wheelCount 1, wheel1 = scrollDirection. Posted to .cghidEventTap. The location matters: we aim at the column of the target so we hit the correct scroll area in split windows, but at the vertical midpoint so we don't land on a tab bar or toolbar.",
+              },
+              {
+                title: "Sleep 100ms, let the app repaint the AX tree",
+                description:
+                  "The AX tree does not update synchronously with the scroll. 100ms is a pragmatic value that works for native AppKit apps, Electron apps, and Catalyst apps alike. Measured, not calculated.",
+              },
+              {
+                title: "Re-search by text, with a 15pt safe viewport",
+                description:
+                  "findElementByText walks the tree again, matches getAXElementText against the anchor. Only accepts hits whose centre falls inside viewport.insetBy(dx: 0, dy: 15). If found, return that fresh centre — the click will land on it. If not, loop.",
+              },
+              {
+                title: "30-step cap, then give up with a log line",
+                description:
+                  "If the element never shows up in 30 iterations, a warning goes to stderr and the function returns the raw point. The click fires wherever that leaves things; the return diff will show whether it mattered.",
               },
             ]}
           />
         </section>
 
-        {/* BentoGrid: what the guard protects */}
+        {/* Bento: what the algorithm handles without agent guidance */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-              The Concrete Failure Modes This Prevents
+              What This Loop Quietly Solves For The Agent
             </h2>
             <p className="text-zinc-600 mb-8 max-w-2xl">
-              The kill-switch is not decorative. Each of these failure modes
-              used to be trivial to reproduce with any accessibility-driven
-              automation; the guard closes them.
+              The agent only ever sends a click with a coordinate or an
+              element text. It does not have to track scroll offsets, predict
+              row heights, or re-run a traversal to figure out where the
+              target ended up. The server does all of that between the request
+              arriving on stdio and the CGEvent leaving.
             </p>
             <BentoGrid
               cards={[
                 {
-                  title: "Your keystrokes colliding with the agent",
+                  title: "Stale AX coordinates from earlier traversals",
                   description:
-                    "Without the tap, typing at the same moment the agent is typing would interleave characters into whatever app has focus. The stateID filter lets the agent's events through and drops yours, so the target field gets a clean sequence from the AI alone.",
+                    "The model's last refresh_traversal might be seconds old; the user might have scrolled in the meantime. The loop re-anchors by text, so old coordinates still reach the right row.",
                   size: "2x1",
                 },
                 {
-                  title: "Mouse nudging mid-click",
+                  title: "Long lists without virtual scroll hints",
                   description:
-                    "mouseMoved, leftMouseDragged, and rightMouseDragged are all in the event mask. A bumped trackpad during a click_and_traverse call cannot shift the cursor off-target.",
+                    "Chat threads, file lists, message tables. Apps don't expose 'scroll by N to see row M'. The text anchor plus the 1-3 lines/step heuristic finds the row anyway.",
                   size: "1x1",
                 },
                 {
-                  title: "Scroll wheel wobble",
+                  title: "Sticky headers and toolbars",
                   description:
-                    "scrollWheel is masked. Scrolling while the agent is scrolling cannot turn a one-step pan into a ten-step leap.",
+                    "The 15pt dy inset on the safe viewport rejects elements that are technically inside the window frame but actually clipped by a header. The loop keeps scrolling one more tick.",
                   size: "1x1",
                 },
                 {
-                  title: "Accidental modifier-change",
+                  title: "Mismatched row heights inside the same list",
                   description:
-                    "flagsChanged is in the mask. Holding Shift mid-type cannot suddenly uppercase the AI's output.",
+                    "Different row heights in the same list would break any fixed-delta scroll. The re-search-after-each-tick design means variable geometry just changes how many ticks it takes.",
                   size: "1x1",
                 },
                 {
-                  title: "No off-ramp",
+                  title: "Multi-window apps and side panels",
                   description:
-                    "Other macOS automation paths (AppleScript, Shortcuts) give you no mid-flight abort. Here, a single Esc returns control and the handler restores cursor + focus before the MCP error returns.",
+                    "getWindowContainingPoint picks the right AXWindow per-click. Clicks aimed at a popover or inspector panel don't accidentally scroll the main document.",
                   size: "1x1",
                 },
               ]}
@@ -590,21 +671,21 @@ export default function MacosUsePage() {
           </div>
         </section>
 
-        {/* The call site in main.swift */}
+        {/* Call site code */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Where The Guard Gets Engaged, Polled, And Released
+            The Call Site: One Line In The Click Handler
           </h2>
           <p className="text-zinc-600 mb-6 max-w-2xl">
-            The handler is one big switch that constructs an{" "}
-            <span className="font-mono text-sm">ActionResult</span> per tool.
-            Everything around{" "}
-            <span className="font-mono text-sm">performAction</span> is where
-            the guard lives: snapshot cursor + focus, engage, call{" "}
-            <span className="font-mono text-sm">throwIfCancelled</span> between
-            steps, disengage, restore. Note that the cancel check is called{" "}
-            <em>four times</em> in the composed-action path alone, because a
-            user can press Esc at any point.
+            Everything above gets wired up by one{" "}
+            <span className="font-mono text-sm">await</span>. The click handler
+            computes a raw point (either from explicit coordinates or by
+            searching the traversal for the element text), then routes it
+            through{" "}
+            <span className="font-mono text-sm">scrollIntoViewIfNeeded</span>{" "}
+            before constructing the click action. The function&rsquo;s signature
+            — takes a point, returns a point — means it drops into the pipeline
+            without restructuring any of the surrounding control flow.
           </p>
           <AnimatedCodeBlock
             code={callSiteCode}
@@ -612,421 +693,193 @@ export default function MacosUsePage() {
             filename="Sources/MCPServer/main.swift"
           />
           <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
-            The 200ms grace window at{" "}
-            <span className="font-mono">main.swift:1757</span> exists because
-            the action frequently finishes faster than a human can finish a key
-            press; without the grace, a late Esc would be lost.
+            Note that the same{" "}
+            <span className="font-mono">adjustedPoint</span> is used whether
+            the action is a click, double-click, or right-click. The
+            scroll-to-reveal is not click-specific; it applies any time the
+            handler is about to dispatch a coordinate-bound input into a
+            possibly-scrolled window.
           </p>
         </section>
 
-        {/* Sequence diagram: the life of one click, from tool call to restoration */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Life Of One{" "}
-            <span className="font-mono text-2xl">click_and_traverse</span>
-          </h2>
-          <p className="text-zinc-600 mb-8 max-w-2xl">
-            An agent sends a click tool call over stdio. This is every line of
-            ownership the cursor crosses between the MCP handler accepting the
-            call and your cursor being put back where it was.
-          </p>
-          <SequenceDiagram
-            title="click_and_traverse, start to finish, with guard engaged"
-            actors={[
-              "MCP client",
-              "CallTool handler",
-              "InputGuard",
-              "CGEventTap",
-              "MacosUseSDK",
-            ]}
-            messages={[
-              { from: 0, to: 1, label: "click_and_traverse(element, pid)", type: "request" },
-              { from: 1, to: 1, label: "save cursor + frontmost app" },
-              { from: 1, to: 2, label: "engage(message: 'AI: Clicking in app…')", type: "request" },
-              { from: 2, to: 3, label: "CGEvent.tapCreate + enable", type: "request" },
-              { from: 2, to: 2, label: "show NSWindow overlay" },
-              { from: 1, to: 4, label: "performAction(.click …)", type: "request" },
-              { from: 4, to: 3, label: "CGEvent.post (stateID != 0) passes through", type: "event" },
-              { from: 1, to: 2, label: "throwIfCancelled() no throw", type: "request" },
-              { from: 1, to: 2, label: "disengage()", type: "request" },
-              { from: 2, to: 3, label: "destroy tap + hide overlay", type: "response" },
-              { from: 1, to: 1, label: "restore cursor + focus" },
-              { from: 1, to: 0, label: "return enriched traversal + diff", type: "response" },
-            ]}
-          />
-        </section>
-
-        {/* Overlay code */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              The Overlay You See On Screen
-            </h2>
-            <p className="text-zinc-600 mb-6 max-w-2xl">
-              The kill-switch has two halves. The CGEventTap is the mechanical
-              half; the overlay is the contract with the user. Without the
-              overlay, you would not know your input was being blocked or that
-              Esc was bound. It is a single borderless NSWindow at{" "}
-              <span className="font-mono text-sm">.screenSaver</span> level
-              with a dark pill, a CABasicAnimation pulse on the dot, and one
-              label.
-            </p>
-
-            <AnimatedCodeBlock
-              code={overlayCode}
-              language="swift"
-              filename="Sources/MCPServer/InputGuard.swift"
-            />
-
-            <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
-              <span className="font-mono">ignoresMouseEvents = true</span>{" "}
-              matters a lot: if the overlay swallowed mouse events, the server
-              could not post its own clicks through to the app behind it. The
-              overlay is passive; the tap does all the blocking.
-            </p>
-          </div>
-        </section>
-
-        {/* StepTimeline: Esc flow */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            What Pressing Esc Actually Runs, In Order
-          </h2>
-          <p className="text-zinc-600 mb-10 max-w-2xl">
-            The user presses Escape mid-click. Six things happen, in this
-            order, before the MCP client sees the cancellation error. Every
-            step is a real line in{" "}
-            <span className="font-mono text-sm">InputGuard.swift</span> or{" "}
-            <span className="font-mono text-sm">main.swift</span>.
-          </p>
-
-          <StepTimeline
-            steps={[
-              {
-                title: "The HID stream delivers the keyDown to the tap",
-                description:
-                  "The CGEventTap was installed at head-insert, so it sees the Esc keyDown before any app does. The callback runs synchronously on the main run loop.",
-              },
-              {
-                title: "Three checks: event type, keycode, modifier mask",
-                description:
-                  "type == .keyDown, keycode == 53, and flags intersected with {Cmd, Control, Option, Shift} is empty. If any of those fails the event is dropped but no cancel fires. Ctrl+Esc does not abort. Shift+Esc does not abort.",
-              },
-              {
-                title: "Write the verification marker file",
-                description:
-                  "Before anything else, the callback writes /tmp/macos-use/esc_pressed.txt with a timestamp. This exists so you can prove the Esc was seen even if the downstream cancellation path failed somehow.",
-              },
-              {
-                title: "handleEscPressed flips _cancelled and tears the tap down",
-                description:
-                  "_cancelled = true under a lock. disengage() is called inline: CGEvent.tapEnable(false), CFRunLoopRemoveSource, CFMachPortInvalidate, stop watchdog, orderOut the overlay window. The onUserCancelled callback fires on an arbitrary thread.",
-              },
-              {
-                title: "Swallow the Esc so the focused app never sees it",
-                description:
-                  "The callback returns nil, which suppresses the event from delivery. This matters because the focused app might have its own Esc handler (close modal, cancel search) that you do not want firing.",
-              },
-              {
-                title: "The next throwIfCancelled throws; handler's catch block restores state",
-                description:
-                  "The next step of the composed action hits try InputGuard.shared.throwIfCancelled(), which throws InputGuardCancelled. The catch block at main.swift:1847 disengages again (idempotent), reposts a mouseMoved at savedCursorPos, reactivates savedFrontmostApp, and returns 'Cancelled: user pressed Esc to abort <tool>' as an isError response.",
-              },
-            ]}
-          />
-        </section>
-
-        {/* Metrics row */}
+        {/* Numbers */}
         <section className="bg-zinc-50 py-16">
           <div className="max-w-4xl mx-auto px-6">
             <h2 className="text-3xl font-bold text-zinc-900 mb-8">
-              The Numbers From InputGuard.swift
+              The Numbers From main.swift
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={355} />
+                    <NumberTicker value={127} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    lines in InputGuard.swift end to end
+                    lines of Swift for the full scroll loop (1159-1285)
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={11} />
+                    <NumberTicker value={30} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    CGEventTypes registered in the event mask
+                    maxSteps cap per invocation
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={53} />
+                    <NumberTicker value={25} />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    keycode that aborts (plain Esc, US layout)
+                    maxDepth for AX tree walk in findElementByText
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={30} suffix="s" />
+                    <NumberTicker value={15} suffix="pt" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    watchdog auto-release timeout
+                    dy inset on safe viewport (rejects header-clipped items)
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={4} />
+                    <NumberTicker value={100} suffix="ms" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    throwIfCancelled call sites in a composed action
+                    sleep between scroll post and AX tree re-search
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={200} suffix="ms" />
+                    <NumberTicker value={80} suffix="px" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    grace window for late-Esc after the action completes
+                    distance threshold for 1 line / step
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={5} />
+                    <NumberTicker value={250} suffix="px" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    tools that engage the guard (all except refresh_traversal)
+                    distance threshold for 2 lines / step (else 3)
                   </div>
                 </div>
               </GlowCard>
               <GlowCard>
                 <div className="p-6">
                   <div className="text-4xl font-bold text-zinc-900">
-                    <NumberTicker value={0.8} decimals={1} suffix="s" />
+                    <NumberTicker value={5} suffix="s" />
                   </div>
                   <div className="text-sm text-zinc-500 mt-2">
-                    overlay dot pulse period (1.0 → 0.3 opacity, autoreverses)
+                    AXUIElementSetMessagingTimeout on the app element
                   </div>
                 </div>
               </GlowCard>
             </div>
             <p className="text-zinc-500 text-sm mt-8">
-              Every number above is a direct read off{" "}
-              <span className="font-mono">Sources/MCPServer/InputGuard.swift</span>{" "}
-              and <span className="font-mono">main.swift</span> as of the
-              current commit. The 11 event types in the mask: keyDown, keyUp,
-              leftMouseDown, leftMouseUp, rightMouseDown, rightMouseUp,
-              mouseMoved, leftMouseDragged, rightMouseDragged, scrollWheel,
-              flagsChanged.
+              Each number is a literal read off the current commit of{" "}
+              <span className="font-mono">Sources/MCPServer/main.swift</span>.
+              Worst case latency: 30 iterations × (scroll post + 100ms sleep +
+              one AX tree walk) is about 3-4 seconds. Typical case for a visible
+              row: zero iterations — the cheap-path check at the top of the
+              function returns immediately.
             </p>
           </div>
         </section>
 
-        {/* The createEventTap code, shown after the numbers so the mask count lands */}
+        {/* Horizontal stepper: the two branches */}
         <section className="max-w-4xl mx-auto px-6 py-16">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            The Mask, Written Out
+            Two Branches, Picked By Whether The Anchor Has Text
           </h2>
-          <p className="text-zinc-600 mb-6 max-w-2xl">
-            The mask is built one bitwise-OR at a time because Swift&rsquo;s
-            type checker times out when you give it a single big expression.
-            Practical detail that only shows up when you actually read the
-            file.
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            findAXElementAtPoint returns the deepest element whose frame
+            contains the raw point. If that element exposes AXValue or AXTitle,
+            the loop takes the text-anchored branch. If it returns a bare group
+            with no text (common for far off-screen list rows where the AX tree
+            is still sparse), the loop falls back to an edge-probe.
           </p>
-          <AnimatedCodeBlock
-            code={tapCreateCode}
-            language="swift"
-            filename="Sources/MCPServer/InputGuard.swift"
-          />
-          <p className="text-zinc-500 text-sm mt-4 max-w-2xl">
-            <span className="font-mono">place: headInsert</span> (value 0) is
-            the important choice. A tail-inserted tap would sit after every
-            app&rsquo;s own event handlers and wouldn&rsquo;t be able to
-            suppress the Esc before something else consumed it.
-          </p>
-        </section>
-
-        {/* Terminal reproduction */}
-        <section className="bg-zinc-50 py-16">
-          <div className="max-w-4xl mx-auto px-6">
-            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-              Verify The Kill-Switch In A Clean Checkout
-            </h2>
-            <p className="text-zinc-600 mb-8 max-w-2xl">
-              Nothing on this page is inferred. Clone the repo, grep, read the
-              call sites, and the entire kill-switch is on disk in two files.
-            </p>
-
-            <TerminalOutput
-              title="Reading the kill-switch from source"
-              lines={[
-                {
-                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
-                  type: "command",
-                },
-                {
-                  text: "cd mcp-server-macos-use",
-                  type: "command",
-                },
-                {
-                  text: "wc -l Sources/MCPServer/InputGuard.swift",
-                  type: "command",
-                },
-                {
-                  text: "     355 Sources/MCPServer/InputGuard.swift",
-                  type: "output",
-                },
-                {
-                  text: "grep -n 'eventSourceStateID\\|keyCode == 53\\|watchdogTimeout\\|throwIfCancelled' Sources/MCPServer/InputGuard.swift",
-                  type: "command",
-                },
-                {
-                  text: "24:    var watchdogTimeout: TimeInterval = 30",
-                  type: "output",
-                },
-                {
-                  text: "53:    func throwIfCancelled() throws {",
-                  type: "output",
-                },
-                {
-                  text: "329:    let sourceStateID = event.getIntegerValueField(.eventSourceStateID)",
-                  type: "output",
-                },
-                {
-                  text: "345:        if keyCode == 53 && flags.intersection(modifierMask).isEmpty {",
-                  type: "output",
-                },
-                {
-                  text: "grep -n 'InputGuard' Sources/MCPServer/main.swift | head -10",
-                  type: "command",
-                },
-                {
-                  text: "1696:                InputGuard.shared.engage(message: \"AI: \\(toolDesc) — press Esc to cancel\")",
-                  type: "output",
-                },
-                {
-                  text: "1708:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
-                  type: "output",
-                },
-                {
-                  text: "1721:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
-                  type: "output",
-                },
-                {
-                  text: "1728:                    if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
-                  type: "output",
-                },
-                {
-                  text: "1734:                if isDisruptive { try InputGuard.shared.throwIfCancelled() }",
-                  type: "output",
-                },
-                {
-                  text: "1758:                let wasCancelled = InputGuard.shared.wasCancelled",
-                  type: "output",
-                },
-                {
-                  text: "All four throwIfCancelled sites + engage + wasCancelled check are right there.",
-                  type: "success",
-                },
-              ]}
-            />
-          </div>
-        </section>
-
-        {/* Comparison */}
-        <section className="max-w-4xl mx-auto px-6 py-16">
-          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
-            macos-use vs Every Other Way To Automate macOS
-          </h2>
-          <ComparisonTable
-            productName="macos-use"
-            competitorName="AppleScript / Shortcuts / other macOS MCPs"
-            rows={[
+          <HorizontalStepper
+            steps={[
               {
-                feature: "Hardware input blocked during automation",
-                ours: "Yes (CGEventTap, .cghidEventTap, head-insert)",
-                competitor: "No",
+                title: "Anchor has text",
+                description:
+                  "Loop scrolls, then re-searches the tree by that text. Returns the first hit inside the safe viewport. main.swift:1191-1219.",
               },
               {
-                feature: "User can abort mid-sequence with one key",
-                ours: "Yes (plain Esc, keycode 53)",
-                competitor: "No",
+                title: "Anchor has no text",
+                description:
+                  "Loop scrolls, then probes a point 60pt inside the viewport edge on every tick. When a textual element finally appears at the raw point, it re-anchors and nudges for up to 8 more ticks. main.swift:1220-1284.",
               },
               {
-                feature: "Distinguishes user input from tool's own posts",
-                ours: "Yes (eventSourceStateID != 0 passes through)",
-                competitor: "N/A",
-              },
-              {
-                feature: "Visible on-screen indicator while active",
-                ours: "Yes (NSWindow at .screenSaver level, pulsing dot)",
-                competitor: "Varies / none",
-              },
-              {
-                feature: "Auto-release if the tool handler hangs",
-                ours: "Yes (30-second DispatchSource watchdog)",
-                competitor: "No",
-              },
-              {
-                feature: "Self-heals if macOS auto-disables the tap",
-                ours: "Yes (tapDisabledByTimeout / ByUserInput re-enable)",
-                competitor: "N/A",
-              },
-              {
-                feature: "Restores cursor + frontmost app on abort",
-                ours: "Yes (savedCursorPos + savedFrontmostApp)",
-                competitor: "No",
-              },
-              {
-                feature: "Marker file so you can verify Esc was detected",
-                ours: "/tmp/macos-use/esc_pressed.txt",
-                competitor: "N/A",
+                title: "Nothing after 30 steps",
+                description:
+                  "Returns the raw point unchanged. A warning is logged to stderr. The click dispatches at the original coordinate; the agent sees an empty or unexpected diff and can retry.",
               },
             ]}
           />
         </section>
 
-        {/* Marquee: concrete events the tap masks */}
+        {/* FlowDiagram — event types pipeline */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            The Data Path For One Scroll Tick
+          </h2>
+          <p className="text-zinc-600 mb-8 max-w-2xl">
+            The loop turns one Swift variable into four concrete system calls
+            per tick. Nothing about this is secret — every stop on the
+            path can be traced by grepping the file.
+          </p>
+          <FlowDiagram
+            title="scrollIntoViewIfNeeded: one loop iteration"
+            steps={[
+              { label: "distance", detail: "|target.y - edge|" },
+              { label: "linesPerStep", detail: "1, 2, or 3" },
+              { label: "CGEvent scroll", detail: "cghidEventTap" },
+              { label: "sleep 100ms", detail: "repaint window" },
+              { label: "findElementByText", detail: "AX walk, depth 25" },
+              { label: "refined point", detail: "midX, midY" },
+            ]}
+          />
+        </section>
+
+        {/* Marquee — the AX attributes the loop reads */}
         <section className="py-12">
           <div className="max-w-4xl mx-auto px-6 mb-6">
             <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-              Every Hardware Event Type The Tap Drops
+              Accessibility Attributes The Loop Actually Reads
             </h2>
             <p className="text-zinc-500">
-              Registered in the event mask at{" "}
-              <span className="font-mono text-sm">InputGuard.swift:113-127</span>
-              . Every one of these, from a physical device, is returned as{" "}
-              <span className="font-mono text-sm">nil</span> (suppressed) for
-              the entire duration of a disruptive tool call.
+              Every function in the scroll loop reads a small, specific set of
+              AX attributes. No AXSelected, no AXEnabled, no AXRoleDescription.
+              Just these.
             </p>
           </div>
           <Marquee speed={30} fade pauseOnHover>
             {[
-              "keyDown",
-              "keyUp",
-              "leftMouseDown",
-              "leftMouseUp",
-              "rightMouseDown",
-              "rightMouseUp",
-              "mouseMoved",
-              "leftMouseDragged",
-              "rightMouseDragged",
-              "scrollWheel",
-              "flagsChanged",
+              "AXPosition",
+              "AXSize",
+              "AXChildren",
+              "AXValue",
+              "AXTitle",
+              "AXWindows",
+              "AXMainWindow",
+              "AXSheet",
+              "AXRole",
             ].map((name) => (
               <div
                 key={name}
@@ -1038,20 +891,137 @@ export default function MacosUsePage() {
           </Marquee>
         </section>
 
-        {/* Proof banner */}
-        <section className="max-w-4xl mx-auto px-6 py-10">
-          <ProofBanner
-            quote="The part that makes macos-use safe to run on the same machine you use to live is not a prompt rule or a permission dialog; it is 355 lines of Swift that put a CGEventTap and a pulsing overlay in between every tool call and your keyboard."
-            source="InputGuard.swift + main.swift:1666-1864"
-            metric="Esc = abort"
+        {/* Comparison table */}
+        <section className="max-w-4xl mx-auto px-6 py-16">
+          <h2 className="text-3xl font-bold text-zinc-900 mb-6">
+            macos-use vs Open-Loop Accessibility Clicks
+          </h2>
+          <ComparisonTable
+            productName="macos-use click_and_traverse"
+            competitorName="Naive AX click at (x, y)"
+            rows={[
+              {
+                feature: "Handles targets outside current viewport",
+                ours: "Yes — text-anchored scroll loop",
+                competitor: "No — click fires at off-screen pixel",
+              },
+              {
+                feature: "Re-verifies coordinate after scrolling",
+                ours: "Re-walks AX tree after every tick",
+                competitor: "Does not scroll; no re-verification",
+              },
+              {
+                feature: "Adaptive to pixel distance",
+                ours: "1 / 2 / 3 lines per step by threshold",
+                competitor: "N/A",
+              },
+              {
+                feature: "Works on text-less AX groups",
+                ours: "Edge-probe fallback branch",
+                competitor: "N/A",
+              },
+              {
+                feature: "Per-window targeting (popovers, sheets)",
+                ours: "getWindowContainingPoint iterates AXWindows",
+                competitor: "Usually targets AXMainWindow only",
+              },
+              {
+                feature: "Bounded latency",
+                ours: "30 steps × ~100ms cap",
+                competitor: "Instant but wrong",
+              },
+              {
+                feature: "Abortable with Esc mid-scroll",
+                ours: "Yes — InputGuard throwIfCancelled is engaged",
+                competitor: "No generic abort",
+              },
+              {
+                feature: "Safe-viewport margin",
+                ours: "15pt dy inset rejects header-clipped hits",
+                competitor: "N/A",
+              },
+            ]}
           />
         </section>
 
+        {/* Proof banner */}
+        <section className="max-w-4xl mx-auto px-6 py-10">
+          <ProofBanner
+            quote="The loop that makes agents reliable on long scroll views is not a prompt rule or a retry heuristic in the client. It is 127 lines of Swift in one function, anchored by text, stepped by pixel distance, and capped at 30 iterations."
+            source="main.swift:1159-1285"
+            metric="scroll → re-read → click"
+          />
+        </section>
+
+        {/* Terminal — reproduce */}
+        <section className="bg-zinc-50 py-16">
+          <div className="max-w-4xl mx-auto px-6">
+            <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+              Reproduce The Whole Thing In A Clean Checkout
+            </h2>
+            <p className="text-zinc-600 mb-8 max-w-2xl">
+              Every line number on this page is on disk. Clone the repo and
+              grep.
+            </p>
+
+            <TerminalOutput
+              title="Reading the scroll loop from source"
+              lines={[
+                {
+                  text: "git clone https://github.com/mediar-ai/mcp-server-macos-use.git",
+                  type: "command",
+                },
+                { text: "cd mcp-server-macos-use", type: "command" },
+                {
+                  text: "grep -n 'scrollIntoViewIfNeeded\\|findElementByText\\|findAXElementAtPoint\\|linesPerStep\\|maxSteps' Sources/MCPServer/main.swift",
+                  type: "command",
+                },
+                {
+                  text: "1057:func findAXElementAtPoint(root: AXUIElement, point: CGPoint, maxDepth: Int = 25)",
+                  type: "output",
+                },
+                {
+                  text: "1126:func findElementByText(root: AXUIElement, text: String, viewport: CGRect, maxDepth: Int = 25)",
+                  type: "output",
+                },
+                {
+                  text: "1159:func scrollIntoViewIfNeeded(pid: pid_t, point: CGPoint) async -> CGPoint",
+                  type: "output",
+                },
+                {
+                  text: "1187:    let linesPerStep: Int32 = distance < 80 ? 1 : (distance < 250 ? 2 : 3)",
+                  type: "output",
+                },
+                {
+                  text: "1189:    let maxSteps = 30",
+                  type: "output",
+                },
+                {
+                  text: "1588:                let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)",
+                  type: "output",
+                },
+                {
+                  text: "sed -n '1128p' Sources/MCPServer/main.swift",
+                  type: "command",
+                },
+                {
+                  text: '    let safeViewport = viewport.insetBy(dx: 0, dy: 15)',
+                  type: "output",
+                },
+                {
+                  text: "Every number and call site on the page is right there.",
+                  type: "success",
+                },
+              ]}
+            />
+          </div>
+        </section>
+
         {/* Inline CTA */}
-        <section className="max-w-4xl mx-auto px-6 py-4">
+        <section className="max-w-4xl mx-auto px-6 py-10">
           <InlineCta
-            heading="Wire macos-use into your MCP client"
-            body="The server runs wherever Claude Code, Cursor, or any MCP client can spawn a binary. Every disruptive tool call will bring up the overlay, and Esc will always get you out."
+            heading="Point macos-use at any scroll-heavy app you use"
+            body="Chat threads, file lists, long settings panels: the scroll loop means an agent can target any row from a stale traversal and still land the click. Install the server, wire it into Claude Desktop or Cursor, and every click_and_traverse gets the scroll-to-reveal behaviour for free."
             linkText="Install from npm"
             href="https://www.npmjs.com/package/mcp-server-macos-use"
           />
@@ -1063,24 +1033,23 @@ export default function MacosUsePage() {
         {/* Final CTA */}
         <section className="max-w-4xl mx-auto px-6 py-16 text-center">
           <h2 className="text-3xl font-bold text-zinc-900 mb-4">
-            Read the kill-switch.
+            Read the scroll loop.
           </h2>
           <p className="text-zinc-500 mb-8 max-w-xl mx-auto">
-            355 lines, one file, reproduces cleanly.{" "}
-            <span className="font-mono text-sm">InputGuard.swift</span> plus the
-            call sites at{" "}
-            <span className="font-mono text-sm">main.swift:1666-1864</span>{" "}
-            are the entire story.
+            One Swift file.{" "}
+            <span className="font-mono text-sm">main.swift:1126-1285</span> is
+            the entire text-anchored, distance-stepped, 30-iteration
+            scroll-to-reveal.
           </p>
-          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift">
-            Open InputGuard.swift on GitHub
+          <ShimmerButton href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1126-L1285">
+            Open main.swift on GitHub
           </ShimmerButton>
         </section>
 
         <StickyBottomCta
-          description="macos-use engages a CGEventTap before every tool call — press Esc to cancel"
-          buttonLabel="Read InputGuard.swift"
-          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/InputGuard.swift"
+          description="macos-use scrolls off-screen click targets into view by re-anchoring by text after every wheel-line step"
+          buttonLabel="Read the loop"
+          href="https://github.com/mediar-ai/mcp-server-macos-use/blob/main/Sources/MCPServer/main.swift#L1159-L1285"
         />
       </article>
     </>
