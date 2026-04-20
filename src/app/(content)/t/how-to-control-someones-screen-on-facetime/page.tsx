@@ -26,7 +26,7 @@ import {
   faqPageSchema,
 } from "@seo/components";
 
-const SLUG = "how-to-control-someone's-screen-on-facetime";
+const SLUG = "how-to-control-someones-screen-on-facetime";
 const URL = `https://macos-use.dev/t/${SLUG}`;
 const DATE_PUBLISHED = "2026-04-18";
 const DATE_MODIFIED = "2026-04-18";
