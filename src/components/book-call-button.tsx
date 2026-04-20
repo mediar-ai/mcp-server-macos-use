@@ -1,7 +1,7 @@
 "use client";
 import { trackScheduleClick } from "@seo/components";
 
-const BOOKING_URL = "https://cal.com/team/mediar/mediar-next-day";
+const BOOKING_URL = "https://cal.com/team/mediar/macos-use";
 
 export function BookCallButton({ className = "", label = "Book a call", section = "hero" }: { className?: string; label?: string; section?: string }) {
   return (
