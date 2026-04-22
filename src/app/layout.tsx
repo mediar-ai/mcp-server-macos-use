@@ -5,10 +5,24 @@ import { GuideChat } from "@/components/guide-chat";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "macos-use: Swift MCP server for controlling macOS apps",
+  title: "macos-use: MCP server that lets Claude Code drive your Mac",
   description:
-    "Open source Swift MCP server that gives AI agents access to any macOS application through native accessibility APIs.",
+    "Open source Swift MCP server for Claude Code, Cursor, VS Code, and Windsurf. Native accessibility APIs, structured UI trees, runs locally. One config, any macOS app.",
   metadataBase: new URL("https://macos-use.dev"),
+  openGraph: {
+    title: "macos-use: MCP server that lets Claude Code drive your Mac",
+    description:
+      "Swift MCP server. Native accessibility APIs, structured UI trees, runs locally. Works with Claude Code, Cursor, VS Code, Windsurf.",
+    url: "https://macos-use.dev",
+    siteName: "macos-use",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "macos-use: MCP server for native macOS control",
+    description:
+      "Let Claude Code drive your Mac, not just your browser. Open source, accessibility-API based, runs locally.",
+  },
 };
 
 export default function RootLayout({
