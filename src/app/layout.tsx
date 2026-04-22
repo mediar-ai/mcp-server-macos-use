@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { SeoComponentsStyles } from "@seo/components/server";
 import { HeadingAnchors, FullSiteAnalytics, NewsletterSignup } from "@seo/components";
 import { SiteSidebar } from "@/components/site-sidebar";
 import { GuideChat } from "@/components/guide-chat";
@@ -20,7 +19,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-white text-zinc-900 antialiased">
-        <SeoComponentsStyles />
         <FullSiteAnalytics
           posthogKey={process.env.NEXT_PUBLIC_POSTHOG_KEY}
           posthogHost={process.env.NEXT_PUBLIC_POSTHOG_HOST}
