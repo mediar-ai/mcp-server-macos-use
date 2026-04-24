@@ -326,7 +326,7 @@ export default function Page() {
             <Breadcrumbs items={breadcrumbItems} />
             <h1 className="text-4xl md:text-5xl font-bold text-zinc-900 mt-8 leading-tight">
               How to add{" "}
-              <GradientText variant="cyan-teal">Screen Mirroring</GradientText>{" "}
+              <GradientText variant="teal">Screen Mirroring</GradientText>{" "}
               to Control Center, and the one function that lets an AI do it
               without scrolling by hand
             </h1>
