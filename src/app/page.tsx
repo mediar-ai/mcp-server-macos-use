@@ -7,6 +7,7 @@ import {
 } from "@seo/components";
 import { BookCallButton } from "@/components/book-call-button";
 import { CopyConfig } from "@/components/copy-config";
+import { HeroInstall } from "@/components/hero-install";
 
 const GITHUB_URL = "https://github.com/mediar-ai/mcp-server-macos-use";
 
@@ -114,32 +115,51 @@ export default function HomePage() {
     <main className="max-w-4xl mx-auto px-6 pt-16 pb-24">
       {/* Hero */}
       <section className="mb-14">
-        <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-600 mb-6">
-          <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
-          Open source · MCP over stdio · Swift
+        <div className="flex flex-wrap items-center gap-2 mb-6">
+          <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-600">
+            <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+            Open source · MCP over stdio · Swift
+          </div>
+          <a
+            href={GITHUB_URL}
+            className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition"
+            aria-label="GitHub stars"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .587l3.668 7.568L24 9.75l-6 5.852L19.336 24 12 19.897 4.664 24 6 15.602 0 9.75l8.332-1.595z"/>
+            </svg>
+            274 stars on GitHub
+          </a>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-teal-100 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700">
+            Shipping inside Fazm
+          </span>
         </div>
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-zinc-900 mb-5 leading-tight">
           Let Claude Code drive your Mac,
           <span className="text-teal-600"> not just your browser.</span>
         </h1>
-        <p className="text-lg text-zinc-600 mb-8 max-w-2xl leading-relaxed">
-          <code className="text-zinc-900 bg-zinc-100 rounded px-1.5 py-0.5 text-base">macos-use</code>{" "}
-          is a Swift MCP server that gives Claude Code, Cursor, VS Code, and Windsurf native control
-          of any macOS app through Apple&apos;s accessibility APIs. Structured UI trees, not screenshots.
-          Runs locally, plugs into the same MCP config you already have.
+        <p className="text-lg text-zinc-600 mb-6 max-w-2xl leading-relaxed">
+          A Swift MCP server that gives Claude Code, Cursor, VS Code, and Windsurf native
+          control of any macOS app via Apple&apos;s accessibility APIs. Structured UI trees,
+          not screenshots. Local binary, stdio transport, plugs into the MCP config you
+          already have.
         </p>
 
+        <div className="mb-6 max-w-2xl">
+          <HeroInstall />
+        </div>
+
         <div className="flex flex-wrap items-center gap-3 mb-6">
+          <BookCallButton section="hero" label="Book a 20-min walkthrough" />
           <a
             href={GITHUB_URL}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 transition"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.38.6.11.82-.26.82-.58v-2.23c-3.34.73-4.04-1.41-4.04-1.41-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 016 0c2.29-1.55 3.3-1.23 3.3-1.23.64 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.22.7.82.58A12 12 0 0024 12c0-6.63-5.37-12-12-12z" />
             </svg>
-            View on GitHub
+            Source on GitHub
           </a>
-          <BookCallButton section="hero" label="Book a walkthrough" />
         </div>
 
         <p className="text-sm text-zinc-500">
