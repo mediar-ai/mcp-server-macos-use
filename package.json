@@ -1,10 +1,18 @@
 {
   "name": "mcp-server-macos-use",
-  "version": "0.1.17",
+  "version": "0.1.18-beta.0",
   "description": "MCP server that lets AI agents control any macOS application through accessibility APIs",
   "bin": {
     "mcp-server-macos-use": "bin/mcp-server-macos-use"
   },
+  "files": [
+    "bin/",
+    "Sources/MCPServer/",
+    "Package.swift",
+    "Package.resolved",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "postinstall": "xcrun swift build -c release",
     "build": "xcrun swift build -c release",
