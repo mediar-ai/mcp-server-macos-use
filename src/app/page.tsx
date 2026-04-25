@@ -140,9 +140,10 @@ export default function HomePage() {
         </h1>
         <p className="text-lg text-zinc-600 mb-6 max-w-2xl leading-relaxed">
           A Swift MCP server that gives Claude Code, Cursor, VS Code, and Windsurf native
-          control of any macOS app via Apple&apos;s accessibility APIs. Structured UI trees,
-          not screenshots. Local binary, stdio transport, plugs into the MCP config you
-          already have.
+          control of any macOS app: open Xcode, click in Slack, drive System Settings,
+          all from a prompt. Reads Apple&apos;s accessibility tree (no screenshots, no OCR
+          tax), runs as a local binary over stdio, drops into the MCP config you already
+          have.
         </p>
 
         <div className="mb-6 max-w-2xl">
@@ -179,6 +180,61 @@ export default function HomePage() {
         <p className="text-xs text-zinc-500 mt-4">
           macOS 13+ required. Swift builds on install. First run prompts for Accessibility permission
           on whichever app is running your MCP client.
+        </p>
+      </section>
+
+      {/* Concrete prompts: the "this is for me" section */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-bold text-zinc-900 mb-2">
+          Once it&apos;s installed, type things like this
+        </h2>
+        <p className="text-zinc-600 mb-6 max-w-2xl">
+          These are real prompts you can drop into Claude Code or Cursor today. The server resolves
+          each one through the accessibility tree, so the agent clicks the right button instead of
+          guessing pixels.
+        </p>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {[
+            {
+              prompt: "Open Xcode, run my project, and screenshot the first build error.",
+              effect: "Launches Xcode, presses ⌘R, watches the issue navigator, returns the error region.",
+            },
+            {
+              prompt: "In Slack, find my latest DM with Sarah and reply \"on it\".",
+              effect: "Focuses Slack, opens the DM by accessibility label, types into the message field, sends.",
+            },
+            {
+              prompt: "Open System Settings → Privacy & Security and list every app with Accessibility access.",
+              effect: "Walks the settings tree, reads the toggles row by row, returns a structured list.",
+            },
+            {
+              prompt: "Drive Cursor: open src/app/page.tsx, jump to line 42, open the agent panel.",
+              effect: "Cross-app handoff: focuses Cursor, ⌘P to open, ⌘G to jump, ⌘L for the panel.",
+            },
+            {
+              prompt: "Find the screenshot I just took on the Desktop, open it in Preview, copy the OCR text.",
+              effect: "Uses Finder + Preview through the accessibility tree, no AppleScript glue.",
+            },
+            {
+              prompt: "Open Mail, find the unread invoice from Stripe, download the PDF to ~/Invoices.",
+              effect: "Mail traversal + native CGEvent clicks. Same flow that ships inside Fazm.",
+            },
+          ].map(({ prompt, effect }) => (
+            <div
+              key={prompt}
+              className="rounded-xl border border-zinc-200 bg-white p-4"
+            >
+              <div className="rounded-lg bg-zinc-900 text-zinc-100 px-3 py-2 text-sm font-mono leading-relaxed mb-3">
+                <span className="text-teal-400">{">"} </span>
+                {prompt}
+              </div>
+              <p className="text-sm text-zinc-600 leading-relaxed">{effect}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-zinc-500 mt-4">
+          Every call is gated by your MCP client&apos;s approval prompt. You see the action before the
+          server runs it.
         </p>
       </section>
 
