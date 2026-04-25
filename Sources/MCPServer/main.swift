@@ -828,6 +828,20 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
             summaryLine = "Refreshed PID \(toolResponse.traversalPid ?? 0)."
         }
 
+    case "macos-use_set_value_and_traverse":
+        let x = params.arguments?["x"]?.doubleValue ?? params.arguments?["x"]?.intValue.map(Double.init) ?? 0
+        let y = params.arguments?["y"]?.doubleValue ?? params.arguments?["y"]?.intValue.map(Double.init) ?? 0
+        let value = params.arguments?["value"]?.stringValue ?? ""
+        let truncatedValue = value.count > 40 ? String(value.prefix(40)) + "..." : value
+        let diffSummary = buildDiffSummary(toolResponse.diff)
+        summaryLine = "AX set value '\(truncatedValue)' at (\(Int(x)),\(Int(y))). \(diffSummary)"
+
+    case "macos-use_press_ax_and_traverse":
+        let x = params.arguments?["x"]?.doubleValue ?? params.arguments?["x"]?.intValue.map(Double.init) ?? 0
+        let y = params.arguments?["y"]?.doubleValue ?? params.arguments?["y"]?.intValue.map(Double.init) ?? 0
+        let diffSummary = buildDiffSummary(toolResponse.diff)
+        summaryLine = "AX pressed element at (\(Int(x)),\(Int(y))). \(diffSummary)"
+
     default:
         summaryLine = "Tool \(toolName) completed."
     }
@@ -1404,8 +1418,43 @@ func setupAndStartServer() async throws -> Server {
         inputSchema: scrollSchema
     )
 
+    let setValueSchema: Value = .object([
+        "type": .string("object"),
+        "properties": .object([
+            "pid": .object(["type": .string("number"), "description": .string("REQUIRED. PID of the target application window.")]),
+            "x": .object(["type": .string("number"), "description": .string("REQUIRED. X coordinate (top-left of element from traversal).")]),
+            "y": .object(["type": .string("number"), "description": .string("REQUIRED. Y coordinate (top-left of element from traversal).")]),
+            "width": .object(["type": .string("number"), "description": .string("Optional. Element width from traversal. When provided with height, hit-tests at center (x+width/2, y+height/2).")]),
+            "height": .object(["type": .string("number"), "description": .string("Optional. Element height from traversal. When provided with width, hit-tests at center (x+width/2, y+height/2).")]),
+            "value": .object(["type": .string("string"), "description": .string("REQUIRED. New string to write into the element via kAXValueAttribute.")])
+        ]),
+        "required": .array([.string("pid"), .string("x"), .string("y"), .string("value")])
+    ])
+    let setValueTool = Tool(
+        name: "macos-use_set_value_and_traverse",
+        description: "Writes a string into the AX element under (x,y) via kAXValueAttribute. Bypasses the input event tap entirely. Use when typing fails (Catalyst right-pane fields, sandboxed/secure-input contexts). Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        inputSchema: setValueSchema
+    )
+
+    let pressAXSchema: Value = .object([
+        "type": .string("object"),
+        "properties": .object([
+            "pid": .object(["type": .string("number"), "description": .string("REQUIRED. PID of the target application window.")]),
+            "x": .object(["type": .string("number"), "description": .string("REQUIRED. X coordinate (top-left of element from traversal).")]),
+            "y": .object(["type": .string("number"), "description": .string("REQUIRED. Y coordinate (top-left of element from traversal).")]),
+            "width": .object(["type": .string("number"), "description": .string("Optional. Element width from traversal. When provided with height, hit-tests at center (x+width/2, y+height/2).")]),
+            "height": .object(["type": .string("number"), "description": .string("Optional. Element height from traversal. When provided with width, hit-tests at center (x+width/2, y+height/2).")])
+        ]),
+        "required": .array([.string("pid"), .string("x"), .string("y")])
+    ])
+    let pressAXTool = Tool(
+        name: "macos-use_press_ax_and_traverse",
+        description: "Performs kAXPressAction on the AX element under (x,y). Use when a synthetic mouse click is dropped (Catalyst right-pane buttons, sandboxed apps). Often the only path that actuates buttons in those apps. Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        inputSchema: pressAXSchema
+    )
+
     // --- Aggregate list of tools ---
-    let allTools = [openAppTool, clickTool, typeTool, pressKeyTool, scrollTool, refreshTool]
+    let allTools = [openAppTool, clickTool, typeTool, pressKeyTool, scrollTool, setValueTool, pressAXTool, refreshTool]
     fputs("log: setupAndStartServer: defined \(allTools.count) tools: \(allTools.map { $0.name })\n", stderr)
 
     let server = Server(
@@ -1651,6 +1700,45 @@ func setupAndStartServer() async throws -> Server {
                 options.showDiff = true
                 hasDiff = true
 
+            case setValueTool.name:
+                guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for set value tool") }
+                let x = try getRequiredDouble(from: params.arguments, key: "x")
+                let y = try getRequiredDouble(from: params.arguments, key: "y")
+                let value = try getRequiredString(from: params.arguments, key: "value")
+                let w = try getOptionalDouble(from: params.arguments, key: "width")
+                let h = try getOptionalDouble(from: params.arguments, key: "height")
+                let hitPoint: CGPoint = (w != nil && h != nil)
+                    ? CGPoint(x: x + w! / 2, y: y + h! / 2)
+                    : CGPoint(x: x, y: y)
+                if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
+                    runningApp.activate(options: [])
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                lastClickPoint = hitPoint
+                primaryAction = .input(action: .axSetValue(point: hitPoint, value: value, pid: reqPid))
+                options.pidForTraversal = reqPid
+                options.showDiff = true
+                hasDiff = true
+
+            case pressAXTool.name:
+                guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for AX press tool") }
+                let x = try getRequiredDouble(from: params.arguments, key: "x")
+                let y = try getRequiredDouble(from: params.arguments, key: "y")
+                let w = try getOptionalDouble(from: params.arguments, key: "width")
+                let h = try getOptionalDouble(from: params.arguments, key: "height")
+                let hitPoint: CGPoint = (w != nil && h != nil)
+                    ? CGPoint(x: x + w! / 2, y: y + h! / 2)
+                    : CGPoint(x: x, y: y)
+                if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
+                    runningApp.activate(options: [])
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                lastClickPoint = hitPoint
+                primaryAction = .input(action: .axPress(point: hitPoint, pid: reqPid))
+                options.pidForTraversal = reqPid
+                options.showDiff = true
+                hasDiff = true
+
             case refreshTool.name:
                 guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for refresh tool") }
                 primaryAction = .traverseOnly
@@ -1690,6 +1778,10 @@ func setupAndStartServer() async throws -> Server {
                     toolDesc = "Pressing \(key)…"
                 case scrollTool.name:
                     toolDesc = "Scrolling in app…"
+                case setValueTool.name:
+                    toolDesc = "Setting AX value in app…"
+                case pressAXTool.name:
+                    toolDesc = "AX-pressing element in app…"
                 default:
                     toolDesc = "Automating…"
                 }
