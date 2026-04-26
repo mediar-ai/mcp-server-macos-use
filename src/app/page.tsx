@@ -1,148 +1,15 @@
 import Link from "next/link";
-import {
-  BentoGrid,
-  ComparisonTable,
-  FaqSection,
-  faqPageSchema,
-} from "@seo/components";
 import { BookCallButton } from "@/components/book-call-button";
 import { CopyConfig } from "@/components/copy-config";
 import { HeroInstall } from "@/components/hero-install";
 
 const GITHUB_URL = "https://github.com/mediar-ai/mcp-server-macos-use";
 
-const FAQS = [
-  {
-    q: "Which MCP clients does it work with?",
-    a: "Anything that speaks MCP over stdio. Tested daily with Claude Code, Claude Desktop, Cursor, VS Code (Copilot Chat), Windsurf, Cline, and Zed. Same JSON config, different file path per client.",
-  },
-  {
-    q: "How is this different from screenshot-based macOS agents?",
-    a: "It reads Apple's native accessibility tree (AXUIElement), so the AI gets structured elements with roles, labels, and coordinates instead of pixels. No OCR, no vision-model tax, no guessing pixel positions. Click by text match (element: \"Submit\") or exact coordinates from the tree. Responses are diff-only, so after an action you get what changed in the UI, not the whole screen again.",
-  },
-  {
-    q: "What macOS permissions does it need, and who grants them?",
-    a: "Accessibility permission is granted to the host process (Claude Desktop, Terminal, iTerm, VS Code — whoever spawns the MCP server), not to macos-use itself. That's macOS's TCC model. Screen Recording is needed only if you want window screenshots. Both are revocable from System Settings > Privacy & Security.",
-  },
-  {
-    q: "Will it click things I didn't approve?",
-    a: "No. Every tool call is gated by your MCP client's approval UI (Claude Code shows a diff-style prompt before each call). During automation, an InputGuard overlay blocks stray keyboard and mouse input so you don't fight the agent. Escape cancels the current action immediately. A 30-second watchdog prevents permanent lockout.",
-  },
-  {
-    q: "Is this safe to install? Where does the code run?",
-    a: "Fully local. The MCP server is a Swift binary running on your Mac, communicating with your AI client over stdio. No network egress from the server itself. Source is open on GitHub under mediar-ai/mcp-server-macos-use. Pin a specific npm version if you want reproducible installs.",
-  },
-  {
-    q: "What can't it do yet?",
-    a: "Apps that expose no accessibility tree (some Electron and custom-rendered games) fall back to coordinate-only clicks. Drag gestures across windows are basic. There is no recording/replay API yet. If you hit something missing, open an issue or book a call — the roadmap follows actual users.",
-  },
-  {
-    q: "How do I uninstall?",
-    a: "Remove the entry from your MCP config file and (optionally) npm uninstall -g mcp-server-macos-use. Revoke Accessibility/Screen Recording in System Settings > Privacy & Security > Accessibility by removing the host app.",
-  },
-];
-
-const BENTO_CARDS = [
-  {
-    title: "Accessibility tree, not pixels",
-    description:
-      "Every action returns structured elements with role, text, and coordinates — `[AXButton] \"Open\" x:680 y:520 w:80 h:30 visible`. No OCR, no vision model tax.",
-    size: "2x1" as const,
-    accent: true,
-  },
-  {
-    title: "Click by text",
-    description:
-      "element: \"Submit\" finds and clicks. No pixel guessing.",
-  },
-  {
-    title: "Diff responses",
-    description:
-      "After each action, only changed elements come back. Cheaper tokens, faster loops.",
-  },
-  {
-    title: "Native event injection",
-    description:
-      "CGEvent clicks and keystrokes are OS-level. Works with apps that reject other simulated input.",
-  },
-  {
-    title: "InputGuard + Escape",
-    description:
-      "User input blocked during automation so you can't fight the agent. Escape cancels, 30s watchdog prevents lockout.",
-  },
-  {
-    title: "Cross-app handoff",
-    description:
-      "Click a link that opens Safari? The server detects the new frontmost app and traverses it automatically.",
-  },
-];
-
-const COMPARISON_ROWS_APPLESCRIPT = [
-  {
-    feature: "What the AI gets",
-    competitor: "Free-form text from `osascript`. The agent has to know the right script for every app.",
-    ours: "Live accessibility tree with roles, labels, and coordinates. Same data Apple gives VoiceOver.",
-  },
-  {
-    feature: "App coverage",
-    competitor: "Only apps that ship a real AppleScript dictionary. Most modern apps don't.",
-    ours: "Every app macOS can describe via AX, including Electron apps, browsers, settings panels.",
-  },
-  {
-    feature: "How clicks happen",
-    competitor: "AppleScript `click button` calls, often blocked by sandboxing. Many apps just refuse.",
-    ours: "Native CGEvent at the OS level. Indistinguishable from a real user, works everywhere.",
-  },
-  {
-    feature: "Failure mode",
-    competitor: "Cryptic AppleScript errors, the agent retries blind.",
-    ours: "Diff response shows exactly which element changed. Agent can self-correct.",
-  },
-  {
-    feature: "Auth & runtime",
-    competitor: "AppleScript runs in the host app's permission scope, hard to reason about.",
-    ours: "One Swift binary over stdio. Local, open source, pinnable npm version.",
-  },
-];
-
-const COMPARISON_ROWS = [
-  {
-    feature: "How it sees the UI",
-    competitor: "Screenshot + OCR / vision model",
-    ours: "Accessibility tree with roles and coordinates",
-  },
-  {
-    feature: "Token cost per action",
-    competitor: "Full screen re-described every step",
-    ours: "Diff-only: elements added / removed / changed",
-  },
-  {
-    feature: "Click targeting",
-    competitor: "Pixel guess from screenshot",
-    ours: "Exact coords from tree, or element text match",
-  },
-  {
-    feature: "Input injection",
-    competitor: "Simulated keystrokes via vision loop",
-    ours: "CGEvent, indistinguishable from real user input",
-  },
-  {
-    feature: "Setup",
-    competitor: "Electron/Docker/Python stack",
-    ours: "One Swift binary + stdio MCP",
-  },
-  {
-    feature: "Where it runs",
-    competitor: "Often hosted SaaS",
-    ours: "100% local on your Mac",
-  },
-];
-
 export default function HomePage() {
   return (
     <main className="max-w-4xl mx-auto px-6 pt-16 pb-24">
       {/* Hero */}
-      <section className="mb-14">
+      <section className="mb-16">
         <div className="flex flex-wrap items-center gap-2 mb-6">
           <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-600">
             <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
@@ -203,13 +70,10 @@ export default function HomePage() {
           </a>
         </div>
 
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-zinc-500 mb-8">
           Works with: Claude Code · Claude Desktop · Cursor · VS Code · Windsurf · Cline · Zed
         </p>
-      </section>
 
-      {/* Demo (moved up so visual proof lands above the fold on scroll) */}
-      <section className="mb-16">
         <div className="rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-50">
           <video
             src="/macos-use-demo.mp4"
@@ -222,11 +86,11 @@ export default function HomePage() {
         </div>
         <p className="text-sm text-zinc-500 mt-3">
           Claude Code using macos-use to open an app, read the accessibility tree, click by text, and
-          verify the result, end to end. No AppleScript, no screenshot loops.
+          verify the result, end to end.
         </p>
       </section>
 
-      {/* Install (highest intent block) */}
+      {/* Install */}
       <section id="install" className="mb-16 scroll-mt-16">
         <h2 className="text-2xl font-bold text-zinc-900 mb-2">
           Install in two steps
@@ -241,162 +105,8 @@ export default function HomePage() {
         </p>
       </section>
 
-      {/* Concrete prompts: the "this is for me" section */}
-      <section className="mb-16">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-          Once it&apos;s installed, type things like this
-        </h2>
-        <p className="text-zinc-600 mb-6 max-w-2xl">
-          These are real prompts you can drop into Claude Code or Cursor today. The server resolves
-          each one through the accessibility tree, so the agent clicks the right button instead of
-          guessing pixels.
-        </p>
-        <div className="grid sm:grid-cols-2 gap-3">
-          {[
-            {
-              prompt: "Open Xcode, run my project, and screenshot the first build error.",
-              effect: "Launches Xcode, presses ⌘R, watches the issue navigator, returns the error region.",
-            },
-            {
-              prompt: "In Slack, find my latest DM with Sarah and reply \"on it\".",
-              effect: "Focuses Slack, opens the DM by accessibility label, types into the message field, sends.",
-            },
-            {
-              prompt: "Open System Settings → Privacy & Security and list every app with Accessibility access.",
-              effect: "Walks the settings tree, reads the toggles row by row, returns a structured list.",
-            },
-            {
-              prompt: "Drive Cursor: open src/app/page.tsx, jump to line 42, open the agent panel.",
-              effect: "Cross-app handoff: focuses Cursor, ⌘P to open, ⌘G to jump, ⌘L for the panel.",
-            },
-            {
-              prompt: "Find the screenshot I just took on the Desktop, open it in Preview, copy the OCR text.",
-              effect: "Uses Finder + Preview through the accessibility tree, no AppleScript glue.",
-            },
-            {
-              prompt: "Open Mail, find the unread invoice from Stripe, download the PDF to ~/Invoices.",
-              effect: "Mail traversal + native CGEvent clicks. Same flow that ships inside Fazm.",
-            },
-          ].map(({ prompt, effect }) => (
-            <div
-              key={prompt}
-              className="rounded-xl border border-zinc-200 bg-white p-4"
-            >
-              <div className="rounded-lg bg-zinc-900 text-zinc-100 px-3 py-2 text-sm font-mono leading-relaxed mb-3">
-                <span className="text-teal-400">{">"} </span>
-                {prompt}
-              </div>
-              <p className="text-sm text-zinc-600 leading-relaxed">{effect}</p>
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-zinc-500 mt-4">
-          Every call is gated by your MCP client&apos;s approval prompt. You see the action before the
-          server runs it.
-        </p>
-      </section>
-
-      {/* Features */}
-      <section className="mb-16">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-2">Why native accessibility beats screenshots</h2>
-        <p className="text-zinc-600 mb-2">
-          Screenshot agents burn tokens re-describing the screen every step and guess pixel positions.
-          macos-use hands Claude a structured tree with semantic roles and coordinates, then returns
-          only what changed after each action.
-        </p>
-        <BentoGrid cards={BENTO_CARDS} />
-      </section>
-
-      {/* Comparison vs AppleScript MCPs (the actual competitor) */}
-      <section className="mb-16">
-        <ComparisonTable
-          heading="macos-use vs. AppleScript-based MCP servers"
-          intro="If you've tried steipete/macos-automator-mcp, peakmojo/applescript-mcp, or any other osascript wrapper, here's what changes."
-          productName="macos-use"
-          competitorName="AppleScript MCPs"
-          rows={COMPARISON_ROWS_APPLESCRIPT}
-          caveat="AppleScript still wins for a handful of legacy automation tasks (Finder folder actions, Mail rules). macos-use stays out of those lanes; everything else, the AX tree is just a better data source."
-        />
-      </section>
-
-      {/* Comparison vs screenshot agents */}
-      <section className="mb-16">
-        <ComparisonTable
-          heading="macos-use vs. screenshot-based agents"
-          productName="macos-use"
-          competitorName="Screenshot agents"
-          rows={COMPARISON_ROWS}
-          caveat="Screenshots still matter for apps that expose no accessibility tree. macos-use captures windows on demand so you can combine both when you need to."
-        />
-      </section>
-
-      {/* Proof */}
-      <section className="mb-16">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-4">Battle tested in production</h2>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-            <div className="text-sm font-semibold text-teal-700 mb-1">Powers Fazm</div>
-            <p className="text-zinc-600 leading-relaxed">
-              The same server ships inside{" "}
-              <a href="https://fazm.ai" className="underline hover:text-teal-700">Fazm</a> as the
-              screen-control layer for a real, paying-customer product. If it works there, it works
-              for your side project.
-            </p>
-          </div>
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-            <div className="text-sm font-semibold text-teal-700 mb-1">Open source, MIT</div>
-            <p className="text-zinc-600 leading-relaxed">
-              Every line is on{" "}
-              <a href={GITHUB_URL} className="underline hover:text-teal-700">GitHub</a>. Pin a
-              version, fork it, audit the Swift. Local binary over stdio, no network calls from the
-              server itself.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* Tools list */}
-      <section className="mb-16">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-4">Six MCP tools</h2>
-        <ul className="grid sm:grid-cols-2 gap-3">
-          {[
-            ["open_application_and_traverse", "Launch or focus any app by name, bundle ID, or path."],
-            ["click_and_traverse", "Click by coordinates or text. Optionally type and press a key in one call."],
-            ["type_and_traverse", "Type into the focused field, with optional modifier keystroke."],
-            ["press_key_and_traverse", "Arrow keys, Cmd+Shift+4, anything. Full modifier support."],
-            ["scroll_and_traverse", "Scroll lines in any direction at a given position."],
-            ["refresh_traversal", "Re-read the tree without taking an action."],
-          ].map(([name, desc]) => (
-            <li key={name} className="rounded-xl border border-zinc-200 bg-white p-4">
-              <code className="text-sm font-mono text-teal-700">{name}</code>
-              <p className="text-sm text-zinc-600 mt-1 leading-relaxed">{desc}</p>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {/* FAQ */}
-      <FaqSection items={FAQS} heading="Questions developers ask before installing" />
-
-      {/* Footer CTAs */}
-      <section className="mt-20 mb-6 rounded-2xl border border-teal-100 bg-gradient-to-br from-teal-50 to-cyan-50 p-8">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-2">Ready to try it?</h2>
-        <p className="text-zinc-700 mb-6 leading-relaxed">
-          Install with one command. If you&apos;re building something bigger on top of it and want the
-          Swift, accessibility, or MCP side tailored to your use case, book 20 minutes with the team.
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <a
-            href="#install"
-            className="inline-flex items-center justify-center rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 transition"
-          >
-            Copy install config
-          </a>
-          <BookCallButton section="footer" label="Book a 20-min call" />
-        </div>
-      </section>
-
-      <section className="mt-10">
+      {/* Links */}
+      <section>
         <h3 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
           Keep reading
         </h3>
@@ -421,13 +131,14 @@ export default function HomePage() {
               Why the accessibility tree matters for AI agents
             </Link>
           </li>
+          <li>
+            <a href={GITHUB_URL} className="underline hover:text-teal-800">
+              GitHub: mediar-ai/mcp-server-macos-use
+            </a>
+          </li>
         </ul>
       </section>
 
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqPageSchema(FAQS)) }}
-      />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
