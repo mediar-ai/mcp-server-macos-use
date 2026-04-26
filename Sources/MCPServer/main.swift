@@ -842,6 +842,13 @@ func buildCompactSummary(toolName: String, params: CallTool.Parameters, toolResp
         let diffSummary = buildDiffSummary(toolResponse.diff)
         summaryLine = "AX pressed element at (\(Int(x)),\(Int(y))). \(diffSummary)"
 
+    case "macos-use_set_selected_and_traverse":
+        let x = params.arguments?["x"]?.doubleValue ?? params.arguments?["x"]?.intValue.map(Double.init) ?? 0
+        let y = params.arguments?["y"]?.doubleValue ?? params.arguments?["y"]?.intValue.map(Double.init) ?? 0
+        let sel = params.arguments?["selected"]?.boolValue ?? true
+        let diffSummary = buildDiffSummary(toolResponse.diff)
+        summaryLine = "AX set selected=\(sel) at (\(Int(x)),\(Int(y))). \(diffSummary)"
+
     default:
         summaryLine = "Tool \(toolName) completed."
     }
@@ -1453,8 +1460,26 @@ func setupAndStartServer() async throws -> Server {
         inputSchema: pressAXSchema
     )
 
+    let setSelectedSchema: Value = .object([
+        "type": .string("object"),
+        "properties": .object([
+            "pid": .object(["type": .string("number"), "description": .string("REQUIRED. PID of the target application window.")]),
+            "x": .object(["type": .string("number"), "description": .string("REQUIRED. X coordinate (top-left of element from traversal).")]),
+            "y": .object(["type": .string("number"), "description": .string("REQUIRED. Y coordinate (top-left of element from traversal).")]),
+            "width": .object(["type": .string("number"), "description": .string("Optional. Element width from traversal. When provided with height, hit-tests at center (x+width/2, y+height/2).")]),
+            "height": .object(["type": .string("number"), "description": .string("Optional. Element height from traversal. When provided with width, hit-tests at center (x+width/2, y+height/2).")]),
+            "selected": .object(["type": .string("boolean"), "description": .string("Optional. True (default) to select, false to deselect.")])
+        ]),
+        "required": .array([.string("pid"), .string("x"), .string("y")])
+    ])
+    let setSelectedTool = Tool(
+        name: "macos-use_set_selected_and_traverse",
+        description: "Sets kAXSelectedAttribute on the AX element under (x,y). Right primitive for Catalyst table rows, sidebar list entries, outline rows, and other selection-bearing controls that expose AXSelected but no AXPress action (where regular click is dropped and press_ax errors with kAXErrorActionUnsupported). Returns a summary with file path. Use Grep/Read on the file to find specific elements.",
+        inputSchema: setSelectedSchema
+    )
+
     // --- Aggregate list of tools ---
-    let allTools = [openAppTool, clickTool, typeTool, pressKeyTool, scrollTool, setValueTool, pressAXTool, refreshTool]
+    let allTools = [openAppTool, clickTool, typeTool, pressKeyTool, scrollTool, setValueTool, pressAXTool, setSelectedTool, refreshTool]
     fputs("log: setupAndStartServer: defined \(allTools.count) tools: \(allTools.map { $0.name })\n", stderr)
 
     let server = Server(
@@ -1739,6 +1764,26 @@ func setupAndStartServer() async throws -> Server {
                 options.showDiff = true
                 hasDiff = true
 
+            case setSelectedTool.name:
+                guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for set selected tool") }
+                let x = try getRequiredDouble(from: params.arguments, key: "x")
+                let y = try getRequiredDouble(from: params.arguments, key: "y")
+                let w = try getOptionalDouble(from: params.arguments, key: "width")
+                let h = try getOptionalDouble(from: params.arguments, key: "height")
+                let selected = try getOptionalBool(from: params.arguments, key: "selected") ?? true
+                let hitPoint: CGPoint = (w != nil && h != nil)
+                    ? CGPoint(x: x + w! / 2, y: y + h! / 2)
+                    : CGPoint(x: x, y: y)
+                if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
+                    runningApp.activate(options: [])
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                lastClickPoint = hitPoint
+                primaryAction = .input(action: .axSetSelected(point: hitPoint, selected: selected, pid: reqPid))
+                options.pidForTraversal = reqPid
+                options.showDiff = true
+                hasDiff = true
+
             case refreshTool.name:
                 guard let reqPid = pidForOptions else { throw MCPError.invalidParams("Missing required 'pid' for refresh tool") }
                 primaryAction = .traverseOnly
@@ -1782,6 +1827,8 @@ func setupAndStartServer() async throws -> Server {
                     toolDesc = "Setting AX value in app…"
                 case pressAXTool.name:
                     toolDesc = "AX-pressing element in app…"
+                case setSelectedTool.name:
+                    toolDesc = "AX-selecting element in app…"
                 default:
                     toolDesc = "Automating…"
                 }

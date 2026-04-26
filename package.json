@@ -7,7 +7,7 @@
   },
   "files": [
     "bin/",
-    "Sources/MCPServer/",
+    "Sources/",
     "Package.swift",
     "Package.resolved",
     "README.md",
