@@ -5,23 +5,23 @@ import { GuideChat } from "@/components/guide-chat";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "macos-use: MCP server that lets Claude Code drive your Mac",
+  title: "macos-use: drive any Mac app from Claude Code (no AppleScript)",
   description:
-    "Open source Swift MCP server for Claude Code, Cursor, VS Code, and Windsurf. Native accessibility APIs, structured UI trees, runs locally. One config, any macOS app.",
+    "Open source Swift MCP server for Claude Code, Cursor, VS Code, Windsurf. Reads Apple's accessibility tree (no AppleScript glue, no screenshot OCR), runs locally over stdio. One install, any macOS app.",
   metadataBase: new URL("https://macos-use.dev"),
   openGraph: {
-    title: "macos-use: MCP server that lets Claude Code drive your Mac",
+    title: "macos-use: drive any Mac app from Claude Code (no AppleScript)",
     description:
-      "Swift MCP server. Native accessibility APIs, structured UI trees, runs locally. Works with Claude Code, Cursor, VS Code, Windsurf.",
+      "Swift MCP server. Native accessibility tree, not screenshots. Not an AppleScript wrapper. Runs locally. Works with Claude Code, Cursor, VS Code, Windsurf, Cline.",
     url: "https://macos-use.dev",
     siteName: "macos-use",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "macos-use: MCP server for native macOS control",
+    title: "macos-use: native macOS control for Claude Code",
     description:
-      "Let Claude Code drive your Mac, not just your browser. Open source, accessibility-API based, runs locally.",
+      "Drive any Mac app from your AI assistant. Native accessibility tree, no AppleScript, no screenshots. Open source Swift, runs locally.",
   },
 };
 

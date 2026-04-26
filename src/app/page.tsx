@@ -77,6 +77,34 @@ const BENTO_CARDS = [
   },
 ];
 
+const COMPARISON_ROWS_APPLESCRIPT = [
+  {
+    feature: "What the AI gets",
+    competitor: "Free-form text from `osascript`. The agent has to know the right script for every app.",
+    ours: "Live accessibility tree with roles, labels, and coordinates. Same data Apple gives VoiceOver.",
+  },
+  {
+    feature: "App coverage",
+    competitor: "Only apps that ship a real AppleScript dictionary. Most modern apps don't.",
+    ours: "Every app macOS can describe via AX, including Electron apps, browsers, settings panels.",
+  },
+  {
+    feature: "How clicks happen",
+    competitor: "AppleScript `click button` calls, often blocked by sandboxing. Many apps just refuse.",
+    ours: "Native CGEvent at the OS level. Indistinguishable from a real user, works everywhere.",
+  },
+  {
+    feature: "Failure mode",
+    competitor: "Cryptic AppleScript errors, the agent retries blind.",
+    ours: "Diff response shows exactly which element changed. Agent can self-correct.",
+  },
+  {
+    feature: "Auth & runtime",
+    competitor: "AppleScript runs in the host app's permission scope, hard to reason about.",
+    ours: "One Swift binary over stdio. Local, open source, pinnable npm version.",
+  },
+];
+
 const COMPARISON_ROWS = [
   {
     feature: "How it sees the UI",
@@ -95,7 +123,7 @@ const COMPARISON_ROWS = [
   },
   {
     feature: "Input injection",
-    competitor: "AppleScript / simulated keystrokes",
+    competitor: "Simulated keystrokes via vision loop",
     ours: "CGEvent, indistinguishable from real user input",
   },
   {
@@ -135,16 +163,28 @@ export default function HomePage() {
           </span>
         </div>
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-zinc-900 mb-5 leading-tight">
-          Let Claude Code drive your Mac,
-          <span className="text-teal-600"> not just your browser.</span>
+          Drive any Mac app from Claude Code.
+          <span className="text-teal-600"> No AppleScript. No screenshots.</span>
         </h1>
-        <p className="text-lg text-zinc-600 mb-6 max-w-2xl leading-relaxed">
-          A Swift MCP server that gives Claude Code, Cursor, VS Code, and Windsurf native
-          control of any macOS app: open Xcode, click in Slack, drive System Settings,
-          all from a prompt. Reads Apple&apos;s accessibility tree (no screenshots, no OCR
-          tax), runs as a local binary over stdio, drops into the MCP config you already
-          have.
+        <p className="text-lg text-zinc-600 mb-5 max-w-2xl leading-relaxed">
+          A Swift MCP server that hands your AI assistant the same accessibility tree Apple
+          gives VoiceOver. Click any button by text. Type into any field. Drive Xcode, Slack,
+          Mail, System Settings, anything with an AX tree.
         </p>
+        <ul className="text-sm text-zinc-700 mb-6 space-y-1.5 max-w-2xl">
+          <li className="flex items-start gap-2">
+            <span className="text-teal-600 mt-0.5">→</span>
+            <span><strong>Not an AppleScript wrapper.</strong> Native AX APIs + CGEvent, so it works on apps with no scripting dictionary (most modern Mac apps).</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-teal-600 mt-0.5">→</span>
+            <span><strong>Not a screenshot agent.</strong> Structured tree responses, diff-only after each action. No OCR tax, no vision-model bill.</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-teal-600 mt-0.5">→</span>
+            <span><strong>100% local.</strong> One Swift binary over stdio. No SaaS, no network egress from the server.</span>
+          </li>
+        </ul>
 
         <div className="mb-6 max-w-2xl">
           <HeroInstall />
@@ -165,6 +205,24 @@ export default function HomePage() {
 
         <p className="text-sm text-zinc-500">
           Works with: Claude Code · Claude Desktop · Cursor · VS Code · Windsurf · Cline · Zed
+        </p>
+      </section>
+
+      {/* Demo (moved up so visual proof lands above the fold on scroll) */}
+      <section className="mb-16">
+        <div className="rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-50">
+          <video
+            src="/macos-use-demo.mp4"
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="w-full h-auto"
+          />
+        </div>
+        <p className="text-sm text-zinc-500 mt-3">
+          Claude Code using macos-use to open an app, read the accessibility tree, click by text, and
+          verify the result, end to end. No AppleScript, no screenshot loops.
         </p>
       </section>
 
@@ -238,25 +296,6 @@ export default function HomePage() {
         </p>
       </section>
 
-      {/* Demo */}
-      <section className="mb-16">
-        <h2 className="text-2xl font-bold text-zinc-900 mb-4">See it drive a real app</h2>
-        <div className="rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-50">
-          <video
-            src="/macos-use-demo.mp4"
-            autoPlay
-            loop
-            muted
-            playsInline
-            className="w-full h-auto"
-          />
-        </div>
-        <p className="text-sm text-zinc-500 mt-3">
-          Claude Code using macos-use to open an app, read the accessibility tree, click by text, and
-          verify the result, end to end.
-        </p>
-      </section>
-
       {/* Features */}
       <section className="mb-16">
         <h2 className="text-2xl font-bold text-zinc-900 mb-2">Why native accessibility beats screenshots</h2>
@@ -268,7 +307,19 @@ export default function HomePage() {
         <BentoGrid cards={BENTO_CARDS} />
       </section>
 
-      {/* Comparison */}
+      {/* Comparison vs AppleScript MCPs (the actual competitor) */}
+      <section className="mb-16">
+        <ComparisonTable
+          heading="macos-use vs. AppleScript-based MCP servers"
+          intro="If you've tried steipete/macos-automator-mcp, peakmojo/applescript-mcp, or any other osascript wrapper, here's what changes."
+          productName="macos-use"
+          competitorName="AppleScript MCPs"
+          rows={COMPARISON_ROWS_APPLESCRIPT}
+          caveat="AppleScript still wins for a handful of legacy automation tasks (Finder folder actions, Mail rules). macos-use stays out of those lanes; everything else, the AX tree is just a better data source."
+        />
+      </section>
+
+      {/* Comparison vs screenshot agents */}
       <section className="mb-16">
         <ComparisonTable
           heading="macos-use vs. screenshot-based agents"
