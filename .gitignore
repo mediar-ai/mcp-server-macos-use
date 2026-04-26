@@ -20,3 +20,6 @@ bun.lockb
 .env.*.local
 .env.development
 .env.production
+
+# SEO plugin build artifact (regenerated at build time)
+seo-guides-manifest.json
