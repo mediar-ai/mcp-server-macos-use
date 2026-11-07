@@ -27,6 +27,7 @@ final class InputGuard: @unchecked Sendable {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var watchdogTimer: DispatchSourceTimer?
+    private var stdinMonitor: DispatchSourceRead?
     private let lock = NSLock()
     private var _engaged = false
     private var _cancelled = false
@@ -88,8 +89,9 @@ final class InputGuard: @unchecked Sendable {
             }
         }
 
-        // Start watchdog timer
+        // Start watchdog timer and stdin disconnect monitor
         startWatchdog()
+        startStdinMonitor()
 
         fputs("log: InputGuard: engaged — tap active, overlay visible\n", stderr)
     }
@@ -105,6 +107,7 @@ final class InputGuard: @unchecked Sendable {
 
         destroyEventTap()
         stopWatchdog()
+        stopStdinMonitor()
         hideOverlay()
     }
 
@@ -276,11 +279,35 @@ final class InputGuard: @unchecked Sendable {
         fputs("log: InputGuard: overlay shown (fullscreen)\n", stderr)
     }
 
+    private func startStdinMonitor() {
+        guard stdinMonitor == nil else { return }
+        let source = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: .global(qos: .utility))
+        source.setEventHandler { [weak self] in
+            if source.data == 0 {
+                fputs("warning: InputGuard: MCP client disconnected (stdin EOF) — auto-disengaging\n", stderr)
+                self?.disengage()
+            }
+        }
+        source.resume()
+        stdinMonitor = source
+    }
+
+    private func stopStdinMonitor() {
+        stdinMonitor?.cancel()
+        stdinMonitor = nil
+    }
+
     private func hideOverlay() {
-        DispatchQueue.main.async { [weak self] in
-            self?.overlayWindow?.orderOut(nil)
-            self?.overlayWindow = nil
+        if Thread.isMainThread {
+            self.overlayWindow?.orderOut(nil)
+            self.overlayWindow = nil
             fputs("log: InputGuard: overlay hidden\n", stderr)
+        } else {
+            DispatchQueue.main.sync {
+                self.overlayWindow?.orderOut(nil)
+                self.overlayWindow = nil
+                fputs("log: InputGuard: overlay hidden\n", stderr)
+            }
         }
     }
 
