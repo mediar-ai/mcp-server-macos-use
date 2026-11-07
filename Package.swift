@@ -9,7 +9,7 @@ let package = Package(
         .macOS(.v13)
     ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.13.0"),
         .package(url: "https://github.com/mediar-ai/MacosUseSDK.git", branch: "main")
     ],
     targets: [
@@ -20,7 +20,7 @@ let package = Package(
                 .product(name: "MacosUseSDK", package: "MacosUseSDK")
             ],
             path: "Sources/MCPServer",
-            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+            swiftSettings: [.unsafeFlags(["-parse-as-library", "-swift-version", "5"])]
         ),
         .executableTarget(
             name: "screenshot-helper",
