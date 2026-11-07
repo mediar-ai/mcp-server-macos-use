@@ -1652,14 +1652,27 @@ func setupAndStartServer() async throws -> Server {
                     }
                 }
 
-                // Activate the target app before clicking so the click registers correctly
-                if let runningApp = NSRunningApplication(processIdentifier: reqPid) {
-                    runningApp.activate(options: [])
+                // Validate and activate the target app before clicking so the click never hits the wrong frontmost app
+                guard let runningApp = NSRunningApplication(processIdentifier: reqPid), !runningApp.isTerminated else {
+                    throw MCPError.invalidParams("Target application with PID \(reqPid) is not running.")
+                }
+                if !runningApp.isActive {
+                    runningApp.activate(options: [.activateIgnoringOtherApps])
                     fputs("log: click_and_traverse: activated app pid=\(reqPid)\n", stderr)
                     try? await Task.sleep(nanoseconds: 200_000_000) // 200ms for activation
                 }
                 // Auto-scroll element into view if it's outside the visible window area
                 let adjustedPoint = await scrollIntoViewIfNeeded(pid: reqPid, point: rawPoint)
+                let systemWide = AXUIElementCreateSystemWide()
+                var hitElement: AXUIElement?
+                let hitErr = AXUIElementCopyElementAtPosition(systemWide, Float(adjustedPoint.x), Float(adjustedPoint.y), &hitElement)
+                if hitErr == .success, let element = hitElement {
+                    var elementPid: pid_t = 0
+                    AXUIElementGetPid(element, &elementPid)
+                    if elementPid != 0 && elementPid != reqPid {
+                        throw MCPError.invalidParams("Refusing to click at (\(Int(adjustedPoint.x)), \(Int(adjustedPoint.y))): coordinates belong to PID \(elementPid), not target PID \(reqPid).")
+                    }
+                }
                 lastClickPoint = adjustedPoint
                 let isDoubleClick = params.arguments?["doubleClick"]?.boolValue ?? false
                 let isRightClick = params.arguments?["rightClick"]?.boolValue ?? false
